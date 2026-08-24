@@ -1,0 +1,10 @@
+{
+  "name": "postmq-session",
+  "description": "A /start-session and /end-session protocol, so your agent records how the project got built instead of losing it in a chat log.",
+  "version": "1.0.0",
+  "author": {
+    "name": "No Compromise AI, LLC",
+    "url": "https://postmq.com"
+  },
+  "homepage": "https://postmq.com/api-docs/kit"
+}

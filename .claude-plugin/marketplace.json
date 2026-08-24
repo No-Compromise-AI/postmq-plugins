@@ -1,0 +1,14 @@
+{
+  "name": "postmq",
+  "owner": {
+    "name": "No Compromise AI, LLC",
+    "url": "https://postmq.com"
+  },
+  "plugins": [
+    {
+      "name": "postmq-session",
+      "source": "./plugins/postmq-session",
+      "description": "A /start-session and /end-session protocol, so your agent records how the project got built instead of losing it in a chat log."
+    }
+  ]
+}
