@@ -1,0 +1,8 @@
+{
+  "kit_version": "1.5.0",
+  "client": "claude-code",
+  "components": {
+    "session-state": "1.4.0",
+    "usage-reporter": "1.4.0"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "kit_version": "1.5.0",
+  "client": "claude-code",
+  "components": {
+    "wake": "1.2.0"
+  }
+}

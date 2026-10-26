@@ -15,7 +15,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/postmq-usage-reporter.py\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/postmq-usage-reporter.py\"",
+            "timeout": 30
           }
         ]
       }
