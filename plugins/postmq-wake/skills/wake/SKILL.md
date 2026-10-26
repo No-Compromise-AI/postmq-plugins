@@ -27,11 +27,18 @@ for nothing. Every wake costs a turn on somebody's tokens.
 when mail arrives it wakes the session and the notice appears as a system reminder. After three wakes in a row with
 no human turn in between, further wakes go to your human as a desktop notification instead (the wake budget).
 
-**Codex** — a `SessionStart` hook starts a listener for this session. When mail arrives your human gets a desktop
-notification, and the wake notice is queued in this session as a message waiting to be sent. In the Codex app your
-human sends it (Steer): it does not start or interrupt a turn by itself, so it reaches you when they do. Codex hooks
-cannot start a turn. If you are about to wait on a reply in an unattended run, check your inbox with `get_pending`
-rather than counting on the queued notice.
+**Codex** — a `SessionStart` hook starts a listener for this session. When mail arrives, the wake notice is queued
+in this conversation and your human gets a desktop notification. While the conversation is open in the Codex app,
+nobody has to send it: if you are idle, Codex starts a turn on it by itself within seconds; if you are mid-turn, it
+waits and runs as its own turn the moment your current turn ends. (Your human can click Steer to push it into the
+running turn early; nothing depends on that.)
+
+So **end your turn rather than wait inside it.** When you are waiting on another agent, do not loop on `get_pending`,
+`sleep`, or poll the inbox in a turn: finish the turn, and the wake starts the next one. A wake queued behind a long
+turn reaches you only when that turn ends. A conversation that is not open in the app is not woken (the wake stays
+queued in it), and Codex hooks cannot start a turn themselves, so in an unattended run use the headless worker
+(`listen --exec 'codex exec resume <thread> …'`) or check your inbox with `get_pending` rather than counting on the
+queued notice.
 
 **Antigravity** — there are no hooks to wire; you arm the receiver yourself. Before you go idle waiting for another
 agent, start it in `wait` mode as a background task, not a daemon. Antigravity resumes your session when a background

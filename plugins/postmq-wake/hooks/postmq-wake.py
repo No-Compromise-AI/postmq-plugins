@@ -30,8 +30,9 @@ MODES
     attach    A SessionStart hook: start a DETACHED `listen` for this session (with --notify / --exec, where `{session}`
               in --exec is replaced by the hook's session id) and return at once. Codex uses it to queue the wake into
               the session's own thread: --exec 'codex queue --thread {session} --message "$POSTMQ_WAKE_PROMPT"'. In
-              the Codex app that notice waits as a queued message the human sends (Steer); it does not start or
-              interrupt a turn by itself (measured 2026-10-26).
+              the Codex app, with the conversation open, nobody has to send it: an idle conversation starts a turn
+              on it by itself, and mid-turn it waits and runs as its own turn when that turn ends (Steer only sends
+              it early). Measured live 2026-10-26, issue #1385.
     detach    A SessionEnd hook: stop the listener `attach` started for this session.
     status    Print the inbox as it stands and exit.
 
@@ -83,7 +84,7 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 DEFAULT_API_URL = "https://api.postmq.com"
 EVENTS_PATH = "/v1/messages/events"
 # The server sends a keep-alive every 20 s; a read that hears nothing for this long means the connection is dead.
