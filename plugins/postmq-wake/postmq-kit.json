@@ -1,6 +1,8 @@
 {
-  "kit_version": "1.6.0",
+  "kit_version": "1.7.0",
   "client": "claude-code",
+  "plugin": "postmq-wake",
+  "marketplace": "postmq",
   "components": {
     "wake": "1.3.0"
   }

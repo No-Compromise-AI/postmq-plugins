@@ -40,8 +40,8 @@ say "    a public-contract change, or a scope change."
 say "  - Work on a branch off the main branch, not on it."
 
 # Which kit this is, read from the install stamp one directory above this script — `.claude/`,
-# `.codex/`, `.zcode/` or `.agents/` depending on the client, and the plugin's own root in the Claude
-# Code plugin. Found from the script's OWN location, so it needs no per-client variable, and read
+# `.codex/`, `.zcode/` or `.agents/` depending on the client, and each plugin's own root in the Claude
+# Code plugins. Found from the script's OWN location, so it needs no per-client variable, and read
 # BEFORE the git check because a kit outside a repository is still a kit.
 #
 # It prints what is INSTALLED and never claims to know what is current: that would need a network
@@ -58,8 +58,20 @@ stamp="${kit_dir}/postmq-kit.json"
 say ""
 say "== PostMQ kit =="
 if [ -n "$kit_dir" ] && [ -f "$stamp" ]; then
-  stamp_name="$(basename "$kit_dir")/postmq-kit.json"
   flat="$(head -c 65536 "$stamp" 2>/dev/null | tr -d '\n\r')"
+  # A Claude Code plugin's stamp says which plugin and marketplace it came from, and that has to reach
+  # the agent: a plugin lives under a directory named after its VERSION, so the file name alone reads
+  # as `1.6.0/postmq-kit.json`, and an agent told only that the kit is old would update it the way
+  # every other route does — by writing the kit into the project, on top of the plugin, wiring every
+  # hook twice. A plugin is updated by its marketplace. Same id shape as a component, or nothing.
+  plugin="$(printf '%s' "$flat" | sed -n 's/.*"plugin"[[:space:]]*:[[:space:]]*"\([a-z0-9][a-z0-9-]*\)".*/\1/p')"
+  marketplace="$(printf '%s' "$flat" | sed -n 's/.*"marketplace"[[:space:]]*:[[:space:]]*"\([a-z0-9][a-z0-9-]*\)".*/\1/p')"
+  if [ -n "$plugin" ] && [ -n "$marketplace" ]; then
+    stamp_name="Claude Code plugin ${plugin}@${marketplace}"
+  else
+    plugin=""
+    stamp_name="$(basename "$kit_dir")/postmq-kit.json"
+  fi
   kit_version="$(printf '%s' "$flat" | sed -n 's/.*"kit_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
   case "$kit_version" in
     *[!0-9.]*|'') kit_version="" ;;
@@ -74,6 +86,10 @@ if [ -n "$kit_dir" ] && [ -f "$stamp" ]; then
     say "  installed: kit ${kit_version} — ${installed} (${stamp_name})"
   else
     say "  installed: unreadable — ${stamp_name} does not say which versions it holds"
+  fi
+  if [ -n "$plugin" ]; then
+    say "  updated by its marketplace, never by copying files: claude plugin marketplace update ${marketplace},"
+    say "  then claude plugin update ${plugin}@${marketplace} (and any other PostMQ plugin installed), and restart."
   fi
 else
   say "  installed: unknown — no postmq-kit.json beside the kit's scripts, so nothing records which"
