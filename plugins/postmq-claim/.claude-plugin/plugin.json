@@ -1,0 +1,10 @@
+{
+  "name": "postmq-claim",
+  "description": "Runs one job on a shared resource \u2014 a GPU host, a test gate \u2014 under a PostMQ claim, so two agents never use it at once and nobody hand-builds a polling loop or a lock file.",
+  "version": "1.11.0",
+  "author": {
+    "name": "No Compromise AI, LLC",
+    "url": "https://postmq.com"
+  },
+  "homepage": "https://postmq.com/docs/kit"
+}

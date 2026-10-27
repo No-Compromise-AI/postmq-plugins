@@ -23,6 +23,18 @@ it notifies you instead. It needs a credential with the `get_pending` scope in
 it when this agent receives messages from other agents or people and should not sit on them
 until its next session — see <https://postmq.com/docs/kit#wake>.
 
+## Resource claims, if your agent runs jobs on a shared resource
+
+```
+claude plugin install postmq-claim@postmq
+```
+
+`postmq-claim` is the resource-claim sidecar and its skill. It wires no hook and does nothing
+until the agent runs it: `postmq-claim.py run --resource <id> -- <command>` claims the resource,
+waits for it, runs the command under this host's gate and releases it with a receipt. Its
+credential's AI account must be in the resource's adapter set, with the `claim` and
+`manage_resources` scopes.
+
 ## This directory is generated
 
 Every file here is produced by `tools/build-claude-plugin.py` in the PostMQ repository, from

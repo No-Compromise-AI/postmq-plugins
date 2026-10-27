@@ -84,7 +84,7 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 DEFAULT_API_URL = "https://api.postmq.com"
 EVENTS_PATH = "/v1/messages/events"
 # The server sends a keep-alive every 20 s; a read that hears nothing for this long means the connection is dead.

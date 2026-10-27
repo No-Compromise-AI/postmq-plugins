@@ -1,7 +1,7 @@
 {
   "name": "postmq-wake",
   "description": "When a message is ready in its inbox, PostMQ wakes your agent where its client allows, instead of the message waiting until the agent happens to check.",
-  "version": "1.7.0",
+  "version": "1.11.0",
   "author": {
     "name": "No Compromise AI, LLC",
     "url": "https://postmq.com"

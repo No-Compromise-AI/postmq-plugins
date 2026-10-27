@@ -144,11 +144,12 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
 
-REPORTER_VERSION = "1.4.0"
+REPORTER_VERSION = "1.5.0"
 AGENT = "claude-code"
 AGENT_CODEX = "codex"
 AGENT_ZCODE = "zcode"
@@ -196,6 +197,113 @@ ARGUMENT_KEYS = (
 
 class ReportError(Exception):
     """A reporting failure with a one-line, credential-free message."""
+
+
+# ── the kit stamp (advisories design §7.5) ────────────────────────────────
+# The project's `postmq-kit.json` rides on the usage report, so PostMQ can count this project's copy of the kit and an
+# advisory about a kit update can say how many copies are behind. Over MCP the server registers the copy after the
+# usage row commits; over REST it checks the fields and registers nothing. Seven OPTIONAL tool arguments, appended
+# after ARGUMENT_KEYS only when the stamp has them — never a key with a null value, and never a guess.
+#
+# Two rules keep the stamp from ever costing the usage report, which is what this hook is for. Every value is checked
+# here against the server's own grammar (AdvisoryHints in src/PostMQ.Application) and left out when it fails; and a
+# report the server still refuses as malformed is sent once more WITHOUT the stamp, because a usage row recorded with
+# no copy beats no usage row.
+STAMP_KEYS = ("kit_version", "install_id", "components", "install_route", "origin_hash", "partial", "project_hint")
+KIT_COMPONENT_IDS = ("session-state", "usage-reporter", "wake", "claim")
+INSTALL_ROUTES = ("pmq", "agent", "plugin")
+_DOTTED = re.compile(r"^[0-9]{1,9}(\.[0-9]{1,9}){0,3}$")
+_INSTALL_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+_ORIGIN_HASH = re.compile(r"^[0-9a-f]{64}$")
+_PROJECT_HINT_MAX = 200
+_REFUSED_CATEGORIES = ("Cc", "Cf", "Co", "Cn", "Cs", "Zl", "Zp")
+
+
+def kit_stamp_path(project: str) -> str:
+    """Where this copy's stamp is: beside the reporter's own install directory (`.claude/`, `.codex/`, `.zcode/`,
+    `.agents/`) — except under a Claude Code plugin, whose own stamp names no project, where it is the project's
+    `.claude/postmq-kit.json`, which the plugin's session-start hook writes."""
+    here = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT") or ""
+    if plugin_root and os.path.realpath(plugin_root) == here:
+        return os.path.join(project, ".claude", "postmq-kit.json")
+    return os.path.join(here, "postmq-kit.json")
+
+
+def _plain_text(value: str, limit: int):
+    """The value as the server's client-string rule would accept it, or None (AdvisoryText.TryNormalize)."""
+    text = unicodedata.normalize("NFC", value.strip())
+    if not text or len(text) > limit or "```" in text or "~~~" in text:
+        return None
+    if any(unicodedata.category(c) in _REFUSED_CATEGORIES for c in text):
+        return None
+    return text
+
+
+def kit_stamp_fields(project: str) -> dict:
+    """The stamp's fields as tool arguments, each one checked; {} when there is no stamp or it is not one.
+
+    NOTHING here may cost the usage report, which is why every failure — not only the I/O and parse errors one
+    expects — reads as "no stamp": a valid 3 KB stamp of nested arrays raises RecursionError from json.loads on
+    Python 3.9, and that escaped to the caller and dropped the report. (Found by Codex.)"""
+    try:
+        return _kit_stamp_fields(project)
+    except Exception:  # noqa: BLE001 — the report outranks the stamp, whatever went wrong reading it
+        return {}
+
+
+def _kit_stamp_fields(project: str) -> dict:
+    path = kit_stamp_path(project)
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(65537)
+        if len(raw) > 65536:
+            return {}
+        stamp = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(stamp, dict):
+        return {}
+    fields = {}
+    version = stamp.get("kit_version")
+    if isinstance(version, str) and _DOTTED.match(version) and len(version) <= 32:
+        fields["kit_version"] = version
+    install_id = stamp.get("install_id")
+    if isinstance(install_id, str) and _INSTALL_ID.match(install_id):
+        fields["install_id"] = install_id
+    components = stamp.get("components")
+    if isinstance(components, dict):
+        pairs = [f"{k}:{v}" for k, v in sorted(components.items())
+                 if k in KIT_COMPONENT_IDS and isinstance(v, str) and _DOTTED.match(v) and len(v) <= 32]
+        joined = ",".join(pairs)
+        if pairs and len(joined) <= 200:
+            fields["components"] = joined
+    route = stamp.get("install_route")
+    if route in INSTALL_ROUTES:
+        fields["install_route"] = route
+    origin = stamp.get("origin_hash")
+    if isinstance(origin, str) and _ORIGIN_HASH.match(origin):
+        fields["origin_hash"] = origin
+    if isinstance(stamp.get("partial"), bool):
+        fields["partial"] = stamp["partial"]
+    # The project is the directory holding the client directory the stamp sits in.
+    hint = _plain_text(os.path.basename(os.path.dirname(os.path.dirname(os.path.realpath(path)))), _PROJECT_HINT_MAX)
+    if hint and fields:
+        fields["project_hint"] = hint
+    return fields
+
+
+def with_stamp(arguments: dict, stamp: dict) -> dict:
+    """`arguments` with the stamp's fields after ARGUMENT_KEYS, in STAMP_KEYS order."""
+    out = dict(arguments)
+    for key in STAMP_KEYS:
+        if key in stamp:
+            out[key] = stamp[key]
+    return out
+
+
+def without_stamp(arguments: dict) -> dict:
+    return {k: v for k, v in arguments.items() if k not in STAMP_KEYS}
 
 
 def _log(msg: str) -> None:
@@ -2310,7 +2418,16 @@ def send(arguments: dict, *, rest: bool) -> bool:
     and the one outcome the caller must not treat as "the server now has my numbers". A server that
     predates the flag omits it, and an absent flag is read as applied, so the older behaviour is
     unchanged."""
-    result = send_rest(arguments) if rest else send_mcp(arguments)
+    try:
+        result = send_rest(arguments) if rest else send_mcp(arguments)
+    except ReportError as e:
+        # The stamp is checked against the server's grammar before it is sent, so this is the case where the two
+        # disagree anyway — a newer rule, a character table that differs. The usage row is what this hook is for.
+        if "POSTMQ_MALFORMED_REQUEST" not in str(e) or not any(k in arguments for k in STAMP_KEYS):
+            raise
+        _log("the server refused this project's kit stamp as malformed; sending the usage without it")
+        arguments = without_stamp(arguments)
+        result = send_rest(arguments) if rest else send_mcp(arguments)
     created = result.get("created") if isinstance(result, dict) else None
     applied = result.get("applied") if isinstance(result, dict) else None
     if applied is False:
@@ -2484,6 +2601,12 @@ def run(hook: dict, *, dry_run: bool = False, rest: bool = False,
         arguments = build_arguments(transcript, claude_session_id, build_session_id,
                                     reading, reading_agent)
         reports = [arguments]
+
+    # This project's copy of the kit, on every report, so a session end counts it (§7.5).
+    stamp = kit_stamp_fields(project_dir or cwd)
+    if stamp:
+        reports = [with_stamp(r, stamp) for r in reports]
+        arguments = next(r for r in reports if r["build_session_id"] == arguments["build_session_id"])
 
     # A ZCode `Stop` hook fires AFTER a turn, so a report with no turns means the rollout was
     # empty, truncated to nothing, or not the one this session is writing. Sending it would put

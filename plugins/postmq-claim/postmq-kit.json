@@ -1,0 +1,9 @@
+{
+  "kit_version": "1.11.0",
+  "client": "claude-code",
+  "plugin": "postmq-claim",
+  "marketplace": "postmq",
+  "components": {
+    "claim": "1.2.0"
+  }
+}

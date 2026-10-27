@@ -14,6 +14,11 @@
       "name": "postmq-wake",
       "source": "./plugins/postmq-wake",
       "description": "When a message is ready in its inbox, PostMQ wakes your agent where its client allows, instead of the message waiting until the agent happens to check."
+    },
+    {
+      "name": "postmq-claim",
+      "source": "./plugins/postmq-claim",
+      "description": "Runs one job on a shared resource \u2014 a GPU host, a test gate \u2014 under a PostMQ claim, so two agents never use it at once and nobody hand-builds a polling loop or a lock file."
     }
   ]
 }
