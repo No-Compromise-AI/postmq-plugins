@@ -48,6 +48,22 @@ checked with Python's standard library. CI fetches two commits and checks the pr
 against its first parent, including GitHub's synthetic PR merge commits. Locally, `git diff --check`
 also checks your uncommitted patch. The test runner rejects empty discovery, skipped tests and failures.
 
+Required CI also compares each complete plugin tree's committed Git blob IDs and executable modes
+against `HEAD^1`, and reads both versions from the corresponding `plugin.json` Git objects. Any plugin
+file addition, removal, rename, byte change or executable-mode change requires a strictly higher numeric
+`major.minor.patch` version without leading zeroes, suffixes or metadata. Updating manifest hashes alone
+does not satisfy this check. The legacy parent need not contain an ownership manifest, but its plugin
+trees and versions must be readable. Missing parent history fails closed; checkout depth two supplies it.
+Changes only to the root ownership manifest or generated `.claude-plugin/README.md` do not invalidate
+plugin installation caches and do not themselves require a plugin-version bump.
+
+Run the README checks with `PYTHONDONTWRITEBYTECODE=1` (or Python's `-B` switch) before publisher use.
+This prevents new `__pycache__` artifacts; it does not remove existing files. If the publisher reports
+ignored files, inspect them and remove only artifacts you own, or use a fresh clean review worktree.
+The version gate reads committed changes; commit the proposed plugin output before running the final
+release check. Review uncommitted changes separately. A local check on a branch's final commit is not
+a substitute for the required PR merge check against the target branch.
+
 [LICENSE](../LICENSE) is the unmodified [official Apache 2.0 text](https://www.apache.org/licenses/LICENSE-2.0.txt).
 No third-party implementation is imported by this foundation. Later imports require provenance,
 compatibility and notice review. Do not invent attribution or imply licensing grants access to external

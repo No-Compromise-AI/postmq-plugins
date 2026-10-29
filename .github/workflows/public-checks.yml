@@ -27,11 +27,11 @@
         },
         {
           "name": "Verify checker regression tests",
-          "run": "python3 tools/run_tests.py"
+          "run": "PYTHONDONTWRITEBYTECODE=1 python3 tools/run_tests.py"
         },
         {
           "name": "Check repository policy and documentation",
-          "run": "python3 tools/check_public_repo.py"
+          "run": "PYTHONDONTWRITEBYTECODE=1 python3 tools/check_public_repo.py"
         },
         {
           "name": "Check patch whitespace",

@@ -91,9 +91,12 @@ fact for the exact subject, epoch and predicate; a model assertion cannot promot
 External observed clients remain useful without native process control. Cooperative and
 managed adapters advertise only operations their actual custody, approved manifest, grants
 and evidence support. Broker intake pause does not prove native work paused. Controls MUST
-distinguish requested, pending approval, claimed, accepted, applying and applied/failed states;
-serialize desired-state changes; bind deadlines, cancellation and idempotency; and reconcile
-ambiguous effects. A stale-epoch receipt cannot mark a current command applied.
+distinguish request, pending approval, exclusive delivery ownership, acceptance, application
+and applied/failed outcome. The ownership fact can be represented by the canonical delivery
+lease with its holder, epoch and expiry; it does not require a literal `claimed` status value
+or a second state machine. Controls serialize desired-state changes, bind deadlines,
+cancellation and idempotency, and reconcile ambiguous effects. A stale-epoch receipt cannot
+mark a current command applied.
 
 Managed launch/restart is optional. It requires a durable launch intent, approved profile,
 reserved attachment and local custody before releasing one launch. Unknown launch results,

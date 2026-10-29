@@ -74,6 +74,14 @@ mapping; admitted or uncertain work cannot be moved by editing contextId. Each p
 and each referenced message/artifact part retains its own current visibility/payload rights;
 access to a task container does not reveal every part or peer.
 
+**Count-only discovery** means a caller may receive an authorized aggregate count of eligible
+candidates in its permitted query scope, without candidate/session/installation identifiers,
+names, labels or private context. It is not permission to enumerate the candidates indirectly.
+A later task/action read still checks its own current subject authority and returns the
+permitted limited projection: lawful status, versions and opaque linkage for that work, not
+the hidden recipient's identity, lease, admission, token or payload. An opaque linked-record
+ID is not a dereference capability; following it requires independent current authorization.
+
 Map each canonical executable work attempt to one A2A Task. Offers may have many authorized
 observers but one task/attempt and one action owner; do not create an executable task per
 observer. A2A messages can contribute context or carry non-actionable replies. New executable
@@ -95,7 +103,7 @@ and non-send mutation identities before interoperable implementation.
 |---|---|---|
 | Submitted | Task accepted into its canonical workflow | Treating it as claimed, admitted or running |
 | Working | Task processing reported; map the canonical admitted action and separately grade progress | Treating status text/heartbeat as verified progress, a current lease, or native custody |
-| Input/auth required | Task needs interaction or authorization | Extending leases indefinitely, revealing credentials, or silently widening grants |
+| Input/auth required | Task needs interaction or authorization within the bounded waiting rules below | Pausing lease clocks, holding work indefinitely, revealing credentials, or silently widening grants |
 | Completed/failed/rejected/canceled | Task-level outcome according to the actual authoritative result | Clearing unresolved execution, retiring another epoch, freeing a resource or creating a successor |
 | Stream end, disconnect or task not found | Transport/visibility observation | Proving the task stopped or its descendants are clean |
 
@@ -106,13 +114,57 @@ unapplied native command as applied or map a pending/unknown cancellation optimi
 to a terminal result. If a task becomes logically terminal while resource reconciliation
 continues, expose that separation without claiming the resource is available.
 
-Cancel Task requests may use the existing safe unstarted cancellation path or the separately
-authorized native control path when supported. They never bypass holder/epoch/admission,
-approval, fence, deadline or recovery predicates. A cancellation response, artifact or signed
-model report is not cleanup proof. Canonical resource reconciliation requires the authorized
-qualified witness and current resource/fence facts, including relevant descendants. Optional
-managed restart waits for surviving old-execution and cleanup gates; an A2A retry is not a
-second launch scheduler.
+### Cancellation boundary
+
+The current proposed mapping supports Cancel Task only through the canonical authorized
+known-unstarted cancellation operation. Its accepting transaction must compare current
+channel/delivery/attention versions, undisposed state and absence of admission, effects and
+uncertainty; a live reservation must first be safely returned under its existing rules.
+If claim/admission or another transition wins the race, cancellation fails without changing
+that attempt. The bridge cannot return or impersonate another holder merely to make it cancelable.
+
+**Cancellation of admitted work is unsupported/not-cancelable in this mapping.** There is
+no action-scoped cancel operation in the underlying contract. Return the standard A2A
+not-cancelable result rather than mapping CancelTask(A) to runtime-wide drain, pause, shutdown
+or restart that can affect task B. Separate authority to manage the runtime does not make
+that substitution valid. Adding admitted-task cancellation requires an independently reviewed,
+qualified action-scoped contract before wire freeze; this profile does not invent it.
+
+A cancellation response, artifact or signed model report is not cleanup proof. Canonical
+resource reconciliation requires the authorized qualified witness and current resource/fence
+facts, including relevant descendants. Optional managed restart waits for surviving old-execution
+and cleanup gates; an A2A retry is not a second launch scheduler.
+
+### Bounded input and authorization waits
+
+Input-required/auth-required is a task observation, not an action-scoped pause or a stopped
+lease clock. A bridge may expose that interrupted state only while it can truthfully account
+for the canonical attempt and its effects; no state label suspends other tasks on the runtime.
+An unclaimed attempt holds no lease, and the label does not reserve it against other eligible
+consumers. A live holder may renew only through the existing canonical operation and bounds:
+10–600 seconds per permitted extension, at most 30 extensions and 3,600 cumulative leased
+seconds, no more often than once per 10 seconds, and never beyond message expiry. Waiting,
+incoming input, a reconnect or a checkpoint does not renew or reset those limits automatically.
+
+Before the earliest lease/message bound, with enough time to settle safely, the owning worker
+must either finish a profile-sufficient checkpoint/terminal outcome with all required cleanup,
+or return a never-admitted reservation under its explicit live-holder/no-start/resource rules.
+Checkpoint settlement is permitted only when the approved work contract allows that terminal
+checkpoint; a partial artifact alone does not complete the task or the user's requested goal.
+Return relinquishes authority and follows canonical recipient/refusal rules; it is not a paused
+claim that the old holder may resume. A completed checkpoint ends that attempt: subsequent
+executable work needs an explicitly authorized new continuation/attempt and its own admission,
+subject to the unchanged root budgets and recovery gates. It does not reopen the old task.
+
+If safe settlement cannot be established, the live holder uses the existing blocked-return
+or recovery transition; it does not request a successful no-start return. Lost contact instead
+reaches recovery through the ordinary lease-expiry rules. Neither path grants replay.
+Unknown effects/resources remain blocked, and the execution boundary must stop accepting new
+effects when authority expires. Do not leave an orphaned running lease or report physical
+quiescence merely because time passed. Late input cannot revive old authority or bypass cleanup.
+A workflow requiring an indefinitely suspended admitted task is unsupported; it cannot be
+admitted on a promise that future input will reset the ceiling. An unexpected input need that
+cannot satisfy these bounded paths is a visible recovery blocker, not a fabricated paused state.
 
 Artifacts remain authorized payload references with provenance. Progress credit requires
 the PmP verifier's accepted useful milestone for the exact action/epoch and approved profile;
@@ -156,9 +208,9 @@ native evidence. See the [conformance overview](../../conformance/README.md).
 | PA-07 | Duplicate message across bindings, changed payload with same identity, lost accept response | One durable accepted task/attempt/result; changed commitment conflicts; retry does not re-resolve recipients or charge twice. |
 | PA-08 | Offer observed by N sessions, simultaneous claims, late enrollment | Frozen audience and one canonical action owner; observations do not become N executable tasks. |
 | PA-09 | Task says working but no admission, old epoch/lease/fence, reused resource association | Execution is denied before effects; task status cannot substitute for current canonical authority. |
-| PA-10 | Cancel before/after admission, native denial, detached descendant, terminal task with unknown cleanup | Truthful task/control outcome; no unsafe reassignment or resource availability until required reconciliation. |
+| PA-10 | Known-unstarted cancellation races claim/admission; CancelTask(A) on a capacity-2 runtime with admitted A and B | Only atomic eligible unstarted cancellation succeeds. Admitted A returns not-cancelable; no runtime-wide command is issued and B is unchanged. No resource availability or reassignment follows uncertain cleanup. |
 | PA-11 | Bridge crash after acceptance or launch, partition, reconnect, duplicate update | Existing task/launch mapping recovered; no second launch; stale receipts cannot apply to a successor epoch. |
-| PA-12 | Owner stop, desired-state CAS race, pending approval and control deadline | Intake and native control remain distinct; reconnect does not resume stopped work; ambiguous effects reconcile. |
+| PA-12 | Input/auth-required near the 3,600-second/extension/message bound; input arrives after safe return, settlement or expiry; owner stop and desired-state/control races | No clock pause, implicit renewal, indefinite hold or old-task revival. Safe settlement/eligible live return ends authority; uncertain effects enter recovery blocking. Other runtime tasks are not paused; reconnect preserves owner stop. |
 | PA-13 | Forged artifact progress/cleanup, mixed-ACL parts, cross-context output, revoked payload access | No self-certified progress/cleanup; each content dereference requires current directional and payload rights without peer/part disclosure through task access. |
 | PA-14 | Stream closes, push duplicates/reorders, replay gap, revoked observer, malicious card/callback URL or redirect/rebinding | Canonical resync preserves work; no false completion/consumption, unauthorized data, SSRF or credential transfer to another audience. |
 | PA-15 | Wrong initial claimant, claimed work returned, effect-uncertain handoff, fresh linked reoffer | Safe known-unstarted recovery only; history/actual author/refusals retained and old authority fenced where required. |
@@ -166,4 +218,4 @@ native evidence. See the [conformance overview](../../conformance/README.md).
 | PA-17 | Base-A2A-only agent, documented native feature but absent qualified bridge | Required PmP capability unavailable; no managed-control or exact native delivery claim from a card/SDK alone. |
 | PA-18 | Self-send loop, same-work continuation, exhausted root, new channel/token | Existing causal limits and one-successor gates hold; IDs and transports cannot reset budgets. |
 | PA-19 | PmP naming release with legacy route/ID or postmq.v2 digest fixtures | Existing bytes and verification remain unchanged; a future namespace change requires explicit new-version vectors/migration. |
-| PA-20 | Count-only sender/controller reads task/action state after claim, cancel or reoffer | Limited projection supplies lawful status/CAS/opaque linkage without holder identities, tokens, payload or discovery escalation. |
+| PA-20 | Count-only sender/controller sees an authorized candidate aggregate, then reads task/action state after claim, cancel or reoffer or follows opaque linkage | No candidate/session/installation IDs, names, labels or private context leak from aggregate discovery; independent limited reads provide lawful status/CAS/opaque linkage without recipient identity, tokens, payload or discovery escalation. |

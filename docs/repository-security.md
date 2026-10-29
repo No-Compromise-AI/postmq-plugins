@@ -31,14 +31,15 @@ changes themselves require a reviewed proposal and a readback of the resulting l
 
 ## Untrusted contributions and credentials
 
-Fork pull-request workflows require maintainer approval for every external contributor. Approval permits
+The configured policy requires maintainer approval of fork workflows for every external contributor. Approval permits
 running code, so inspect workflow and script changes before approving a run. Public CI uses disposable
 GitHub-hosted runners, a read-only token, no repository secrets, no persistent credentials and no
 `pull_request_target` execution. Never move public pull-request jobs onto private self-hosted runners.
 
-Only the listed checkout and Python setup actions are permitted, pinned to full commit hashes. Workflow
-tokens cannot approve pull requests. Dependency alerts, automated security fixes, secret scanning and
-push protection are enabled. These reduce risk; they do not prove that a contribution contains no secrets
+The desired configuration permits only the listed checkout and Python setup actions, pinned to full commit hashes.
+It prevents workflow tokens from approving pull requests and enables dependency alerts, automated security fixes,
+secret scanning and push protection. Confirm their live state with the readback procedure below; this document
+alone is not evidence they remain enabled. These controls reduce risk; they do not prove that a contribution contains no secrets
 or malicious behavior. Report suspected vulnerabilities through [SECURITY.md](../SECURITY.md).
 
 Publishing produces a reviewable branch and pull request. Build and check generated content locally;

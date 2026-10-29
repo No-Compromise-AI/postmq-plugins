@@ -17,10 +17,11 @@ PLUGINS = {"postmq-session", "postmq-wake", "postmq-claim"}
 ROOT = Path(__file__).resolve().parents[1]
 LICENSE_SHA256 = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
 CHECK_COMMANDS = [
-    "python3 tools/run_tests.py",
-    "python3 tools/check_public_repo.py",
+    "PYTHONDONTWRITEBYTECODE=1 python3 tools/run_tests.py",
+    "PYTHONDONTWRITEBYTECODE=1 python3 tools/check_public_repo.py",
     "git show --format= --check --diff-merges=first-parent HEAD",
 ]
+VERSION_PATTERN = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 
 
 def require(condition: bool, message: str) -> None:
@@ -119,10 +120,51 @@ def check_generated(root: Path, manifest: dict) -> None:
         plugin = load_json(root / f"plugins/{name}/.claude-plugin/plugin.json")
         kit = load_json(root / f"plugins/{name}/postmq-kit.json")
         version = manifest["plugin_versions"][name]
-        require(isinstance(version, str) and re.fullmatch(r"\d+\.\d+\.\d+", version) is not None, f"plugin version shape: {name}")
+        require(isinstance(version, str) and re.fullmatch(VERSION_PATTERN, version) is not None, f"plugin version shape: {name}")
         require(plugin["name"] == kit["plugin"] == name, f"plugin identity drift: {name}")
         require(plugin["version"] == kit["kit_version"] == version, f"plugin version drift: {name}")
         require(kit["marketplace"] == "postmq" and kit["client"] == "claude-code", f"kit identity drift: {name}")
+
+
+def git_object(root: Path, *arguments: str) -> bytes:
+    result = subprocess.run(["git", "-C", str(root), *arguments], capture_output=True, check=False)
+    require(result.returncode == 0, f"cannot read Git release baseline ({arguments[0]}); checkout must include HEAD and its first parent")
+    return result.stdout
+
+
+def canonical_version(value: object, context: str) -> tuple[int, int, int]:
+    require(isinstance(value, str) and re.fullmatch(VERSION_PATTERN, value) is not None, f"canonical major.minor.patch required: {context}")
+    return tuple(int(part) for part in value.split("."))
+
+
+def plugin_tree(root: Path, revision: str, name: str) -> dict[bytes, tuple[bytes, bytes]]:
+    entries = git_object(root, "ls-tree", "-r", "-z", "--full-tree", revision, "--", f"plugins/{name}/")
+    result = {}
+    for entry in entries.split(b"\0"):
+        if not entry:
+            continue
+        metadata, path = entry.split(b"\t", 1)
+        mode, kind, object_id = metadata.split(b" ")
+        require(kind == b"blob" and mode in {b"100644", b"100755"}, f"non-regular plugin Git object: {name}")
+        result[path] = (mode, object_id)
+    require(bool(result), f"missing plugin Git tree: {name}")
+    return result
+
+
+def check_plugin_versions(root: Path) -> None:
+    """Compare committed Git bytes/modes, including bases predating ownership manifests."""
+    head = git_object(root, "rev-parse", "--verify", "HEAD^{commit}").decode().strip()
+    base = git_object(root, "rev-parse", "--verify", "HEAD^1^{commit}").decode().strip()
+    for name in sorted(PLUGINS):
+        before_tree = plugin_tree(root, base, name)
+        after_tree = plugin_tree(root, head, name)
+        versions = []
+        for revision in (base, head):
+            data = json.loads(git_object(root, "show", f"{revision}:plugins/{name}/.claude-plugin/plugin.json"), object_pairs_hook=unique_object)
+            require(isinstance(data, dict) and data.get("name") == name, f"plugin identity in Git baseline: {name}")
+            versions.append(canonical_version(data.get("version"), f"{name}@{revision}"))
+        if before_tree != after_tree:
+            require(versions[1] > versions[0], f"{name} requires a strictly higher canonical major.minor.patch version when plugin bytes or executable modes change")
 
 
 def markdown_text(text: str) -> str:
@@ -203,6 +245,7 @@ def check_repository(root: Path) -> int:
     require(hashlib.sha256((root / "LICENSE").read_bytes()).hexdigest() == LICENSE_SHA256, "official unmodified Apache 2.0 license")
     require((root / ".github/CODEOWNERS").read_text().splitlines()[-1] == "* @nocompromiseai", "maintainer code ownership")
     check_generated(root, load_json(root / ".postmq-generated.json"))
+    check_plugin_versions(root)
     check_security_config(root)
     for path in paths:
         if not path.is_file():

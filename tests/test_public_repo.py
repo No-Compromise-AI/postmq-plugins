@@ -254,6 +254,121 @@ class DocumentationTests(unittest.TestCase):
                 check.load_json(path)
 
 
+class PluginReleaseVersionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / "repo"
+        shutil.copytree(check.ROOT, self.root, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        self.manifest = check.load_json(self.root / ".postmq-generated.json")
+        (self.root / ".postmq-generated.json").unlink()
+        self.git("init", "-q", "-b", "main")
+        self.commit("Legacy distribution without an ownership manifest")
+        self.assertFalse((self.root / ".postmq-generated.json").exists())
+
+    def git(self, *arguments):
+        result = subprocess.run(["git", "-C", str(self.root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "-c", f"core.hooksPath={Path(self.temp.name) / 'empty-hooks'}", *arguments], capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout
+
+    def commit(self, message):
+        names = sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob("*") if p.is_file() and ".git" not in p.relative_to(self.root).parts and "__pycache__" not in p.parts)
+        self.git("add", "--", *names)
+        self.git("commit", "-qm", message)
+
+    def refresh_manifest(self):
+        for name in self.manifest["files"]:
+            path = self.root / name
+            self.manifest["files"][name] = {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "executable": bool(path.stat().st_mode & 0o111)}
+        (self.root / ".postmq-generated.json").write_text(json.dumps(self.manifest, indent=2) + "\n")
+        # Updated ownership hashes alone must not make a stale cache version acceptable.
+        check.check_generated(self.root, self.manifest)
+
+    def change_skill(self):
+        path = self.root / "plugins/postmq-session/skills/start-session/SKILL.md"
+        path.write_text(path.read_text() + "\nSynthetic changed skill content.\n")
+
+    def test_legacy_base_and_ownership_metadata_only_need_no_version_bump(self):
+        self.refresh_manifest()
+        self.commit("Add only ownership metadata")
+        check.check_plugin_versions(self.root)
+
+    def test_changed_skill_and_updated_hash_require_a_higher_version(self):
+        self.change_skill()
+        self.refresh_manifest()
+        self.commit("Changed skill with the same version")
+        with self.assertRaisesRegex(ValueError, "postmq-session.*strictly higher"):
+            check.check_plugin_versions(self.root)
+
+    def test_required_cli_rejects_changed_skill_with_a_self_consistent_manifest(self):
+        self.change_skill()
+        self.refresh_manifest()
+        self.commit("Changed skill with the same version")
+        result = subprocess.run([sys.executable, "-B", str(self.root / "tools/check_public_repo.py")], capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("postmq-session requires a strictly higher", result.stderr)
+
+    def test_changed_skill_with_higher_canonical_version_passes(self):
+        self.change_skill()
+        version = self.manifest["plugin_versions"]["postmq-session"]
+        major, minor, patch = check.canonical_version(version, "test baseline")
+        higher = f"{major}.{minor}.{patch + 1}"
+        for relative, field in ((".claude-plugin/plugin.json", "version"), ("postmq-kit.json", "kit_version")):
+            path = self.root / "plugins/postmq-session" / relative
+            data = check.load_json(path)
+            data[field] = higher
+            path.write_text(json.dumps(data) + "\n")
+        self.manifest["plugin_versions"]["postmq-session"] = higher
+        self.refresh_manifest()
+        self.commit("Changed skill with a higher version")
+        check.check_plugin_versions(self.root)
+
+    def test_executable_mode_only_change_requires_a_higher_version(self):
+        path = self.root / "plugins/postmq-session/skills/start-session/SKILL.md"
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        path.chmod(path.stat().st_mode ^ 0o100)
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
+        self.refresh_manifest()
+        self.commit("Executable mode changed without changing bytes")
+        self.assertIn("100755", self.git("ls-tree", "HEAD", "--", "plugins/postmq-session/skills/start-session/SKILL.md"))
+        with self.assertRaisesRegex(ValueError, "postmq-session.*strictly higher"):
+            check.check_plugin_versions(self.root)
+
+    def test_generated_metadata_readme_change_needs_no_plugin_version_bump(self):
+        path = self.root / ".claude-plugin/README.md"
+        path.write_text(path.read_text() + "\nSynthetic publisher metadata note.\n")
+        self.refresh_manifest()
+        self.commit("Only publisher metadata changed")
+        check.check_plugin_versions(self.root)
+
+    def test_missing_first_parent_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "checkout must include HEAD and its first parent"):
+            check.check_plugin_versions(self.root)
+
+    def test_shallow_pr_merge_checks_all_plugin_changes_against_target_parent(self):
+        self.git("checkout", "-qb", "candidate")
+        self.change_skill()
+        self.refresh_manifest()
+        self.commit("Unversioned plugin change earlier in the proposal")
+        path = self.root / "CONTRIBUTING.md"
+        path.write_text(path.read_text() + "\nSynthetic final documentation-only commit.\n")
+        self.commit("Last proposal commit changes only documentation")
+        self.git("checkout", "-q", "main")
+        self.git("merge", "--no-ff", "--no-edit", "candidate")
+        clone = Path(self.temp.name) / "pr-ci"
+        self.git("clone", "--depth", "2", "--branch", "main", self.root.as_uri(), str(clone))
+        check.check_generated(clone, check.load_json(clone / ".postmq-generated.json"))
+        # The merge's first parent is the target branch, not just the proposal's last commit.
+        with self.assertRaisesRegex(ValueError, "postmq-session.*strictly higher"):
+            check.check_plugin_versions(clone)
+
+    def test_version_numbers_are_canonical_and_numeric(self):
+        self.assertGreater(check.canonical_version("1.11.10", "higher"), check.canonical_version("1.11.9", "lower"))
+        for value in ("01.2.3", "1.02.3", "1.2.03", "1.2", "1.2.3-beta", "1.2.3+build", "v1.2.3", 1):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "canonical major.minor.patch"):
+                check.canonical_version(value, "synthetic invalid version")
+
+
 class SecurityConfigurationTests(unittest.TestCase):
     def test_safe_configuration_is_accepted(self):
         check.check_security_config(check.ROOT)
