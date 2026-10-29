@@ -54,8 +54,10 @@ file addition, removal, rename, byte change or executable-mode change requires a
 `major.minor.patch` version without leading zeroes, suffixes or metadata. Updating manifest hashes alone
 does not satisfy this check. The legacy parent need not contain an ownership manifest, but its plugin
 trees and versions must be readable. Missing parent history fails closed; checkout depth two supplies it.
-Changes only to the root ownership manifest or generated `.claude-plugin/README.md` do not invalidate
-plugin installation caches and do not themselves require a plugin-version bump.
+Changes only to the root ownership manifest, generated `.claude-plugin/README.md` or
+`.claude-plugin/marketplace.json` do not themselves require a plugin-version bump. Marketplace identity
+and plugin source paths remain independently guarded by the ownership/installation checks; this
+metadata exemption does not authorize renaming them or redirecting installations.
 
 Run the README checks with `PYTHONDONTWRITEBYTECODE=1` (or Python's `-B` switch) before publisher use.
 This prevents new `__pycache__` artifacts; it does not remove existing files. If the publisher reports

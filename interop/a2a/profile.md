@@ -128,7 +128,8 @@ no action-scoped cancel operation in the underlying contract. Return the standar
 not-cancelable result rather than mapping CancelTask(A) to runtime-wide drain, pause, shutdown
 or restart that can affect task B. Separate authority to manage the runtime does not make
 that substitution valid. Adding admitted-task cancellation requires an independently reviewed,
-qualified action-scoped contract before wire freeze; this profile does not invent it.
+qualified action-scoped contract before any profile version advertises action-scoped
+cancellation; this profile does not invent it.
 
 A cancellation response, artifact or signed model report is not cleanup proof. Canonical
 resource reconciliation requires the authorized qualified witness and current resource/fence

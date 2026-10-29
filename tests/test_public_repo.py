@@ -3,18 +3,53 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import check_public_repo as check
 
 
-class RequiredRunnerTests(unittest.TestCase):
+class IsolatedGitTestCase(unittest.TestCase):
+    def setUp(self):
+        self.git_environment_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.git_environment_temp.cleanup)
+        self.empty_git_directory = Path(self.git_environment_temp.name) / "empty"
+        self.empty_git_directory.mkdir()
+        # Change only this test process's environment; all Git operations remain real subprocesses.
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_TEMPLATE_DIR=str(self.empty_git_directory))
+        isolation = patch.dict(os.environ, environment, clear=True)
+        isolation.start()
+        self.addCleanup(isolation.stop)
+
+    def fixture_git(self, root, *arguments):
+        return subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "-c", f"core.hooksPath={self.empty_git_directory}", *arguments], capture_output=True, text=True, timeout=15)
+
+    def copy_tracked_files(self, source, destination):
+        result = self.fixture_git(source, "ls-files", "-z")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        names = [name for name in result.stdout.split("\0") if name]
+        self.assertTrue(names, "tracked fixture source must not be empty")
+        destination.mkdir()
+        for name in names:
+            relative = Path(name)
+            self.assertFalse(relative.is_absolute() or ".." in relative.parts, name)
+            original = source / relative
+            self.assertTrue(original.is_file(), f"missing tracked fixture file: {name}")
+            self.assertFalse(any(path.is_symlink() for path in [original, *original.parents] if path.is_relative_to(source)), f"tracked fixture source is a symlink: {name}")
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(original, target)
+
+
+class RequiredRunnerTests(IsolatedGitTestCase):
     def test_empty_skipped_failed_and_passing_real_suites(self):
         # Bug shape: ordinary unittest returns success for skipped or empty required verification.
         cases = [
@@ -34,7 +69,7 @@ class RequiredRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             def git(*args):
-                return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=15)
+                return self.fixture_git(root, *args)
             self.assertEqual(git("init", "-q").returncode, 0)
             (root / "example.txt").write_text("synthetic trailing whitespace  \n")
             self.assertEqual(git("add", "example.txt").returncode, 0)
@@ -52,7 +87,7 @@ class RequiredRunnerTests(unittest.TestCase):
             source = root / "source"
             source.mkdir()
             def git(where, *args):
-                return subprocess.run(["git", "-C", str(where), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", *args], capture_output=True, text=True, timeout=15)
+                return self.fixture_git(where, *args)
             def succeed(where, *args):
                 result = git(where, *args)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -254,20 +289,68 @@ class DocumentationTests(unittest.TestCase):
                 check.load_json(path)
 
 
-class PluginReleaseVersionTests(unittest.TestCase):
+class HostileGitFixtureTests(unittest.TestCase):
+    def test_real_release_fixtures_ignore_host_config_environment_and_local_artifacts(self):
+        # Bug shape: a maintainer's ignore/config or ignored local file breaks fixture commits.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            empty = root / "empty-template"
+            empty.mkdir()
+            clean = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+            clean.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_TEMPLATE_DIR=str(empty), PYTHONDONTWRITEBYTECODE="1")
+            source = root / "source"
+            cloned = subprocess.run(["git", "-C", str(root), "clone", "--no-hardlinks", str(check.ROOT), str(source)], env=clean, capture_output=True, text=True, timeout=15)
+            self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
+            tracked = subprocess.run(["git", "-C", str(check.ROOT), "ls-files", "-z"], env=clean, capture_output=True, check=True).stdout
+            # Overlay tracked current bytes so precommit test development exercises this patch.
+            for entry in tracked.split(b"\0"):
+                if entry:
+                    name = os.fsdecode(entry)
+                    target = source / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(check.ROOT / name, target)
+            excludes = root / "global-ignore"
+            excludes.write_text("AGENTS.md\nCLAUDE.md\n")
+            global_config = root / "global-gitconfig"
+            global_config.write_text(f"[core]\n\texcludesFile = {excludes}\n[commit]\n\tgpgsign = true\n")
+            system_config = root / "system-gitconfig"
+            system_config.write_text(f"[core]\n\texcludesFile = {excludes}\n")
+            configs = dict(clean, GIT_CONFIG_GLOBAL=str(global_config), GIT_CONFIG_SYSTEM=str(system_config))
+            configs.pop("GIT_CONFIG_NOSYSTEM")
+            hostile_template = root / "hostile-template"
+            hostile_template.mkdir()
+            (hostile_template / "template-marker").write_text("must not enter fixture Git metadata")
+            injected = dict(configs, GIT_DIR=str(root / "absent-git-dir"), GIT_WORK_TREE=str(root / "wrong-tree"), GIT_INDEX_FILE=str(root / "wrong-index"), GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.filemode", GIT_CONFIG_VALUE_0="false", GIT_TEMPLATE_DIR=str(hostile_template))
+            for label, environment, ignored_file in (("hostile-global-and-system", configs, False), ("ignored-local-artifact", clean, True), ("injected-GIT-environment", injected, False)):
+                with self.subTest(case=label):
+                    artifact = source / ".DS_Store"
+                    if ignored_file:
+                        artifact.write_text("synthetic ignored local data")
+                    result = subprocess.run([sys.executable, "-B", "-m", "unittest", "test_public_repo.PluginReleaseVersionTests", "-v"], cwd=source / "tests", env=environment, capture_output=True, text=True, timeout=30)
+                    if ignored_file:
+                        self.assertEqual(artifact.read_text(), "synthetic ignored local data")
+                        artifact.unlink()
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("Ran 9 tests", result.stderr)
+                    self.assertIn("\nOK\n", result.stderr)
+
+
+class PluginReleaseVersionTests(IsolatedGitTestCase):
     def setUp(self):
+        super().setUp()
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / "repo"
-        shutil.copytree(check.ROOT, self.root, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        self.copy_tracked_files(check.ROOT, self.root)
         self.manifest = check.load_json(self.root / ".postmq-generated.json")
         (self.root / ".postmq-generated.json").unlink()
         self.git("init", "-q", "-b", "main")
+        self.assertFalse((self.root / ".git/template-marker").exists(), "fixture inherited a host Git template")
         self.commit("Legacy distribution without an ownership manifest")
         self.assertFalse((self.root / ".postmq-generated.json").exists())
 
     def git(self, *arguments):
-        result = subprocess.run(["git", "-C", str(self.root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "-c", f"core.hooksPath={Path(self.temp.name) / 'empty-hooks'}", *arguments], capture_output=True, text=True, timeout=15)
+        result = self.fixture_git(self.root, *arguments)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
 
