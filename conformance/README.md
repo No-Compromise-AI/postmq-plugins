@@ -34,7 +34,8 @@ authority, stage 2 builds the implementations and runner; stage 3 qualifies them
    an optional **gateway** maps a declared external binding to that same authority. Build two
    independent coordinators (A and B) and two independent participant implementations (a and b)
    for the selected profile. One set may be PostMQ. Coordinator B must run from public artifacts
-   with its own authority/storage and no PostMQ service or private dependency. Participants
+   with its own authority/storage and no PostMQ service or private dependency. Independent
+   participant b must likewise be buildable from public artifacts alone. Participants
    use their selected coordinator; they do not need their own competing authority store.
    Disclose teams, shared libraries and engines. A second wrapper around the same protocol
    engine is not independent. Shared transport/cryptographic libraries are not by themselves
@@ -62,7 +63,7 @@ These are additional design cases, not executed tests. They supplement the core 
 |---|---|
 | CH-01 Independent implementability | Independent coordinator uses only public contracts and its own authority/storage; participants cross-test against each coordinator's separate authorized workspace as above. No PostMQ service, private schema or vendor-specific required feature for the independent coordinator, and no cross-authority traffic. |
 | CH-02 Direct and delegated humans | Direct human action and agent-on-behalf action preserve distinct actors, exact subjects and bounded grants; names or model instructions cannot enroll or authorize. |
-| CH-03 Revocation and visible limits | Race revoke against admission/control; reject new unauthorized effects. Show broker intent, actual native outcome, uncertainty and residual resources separately. Reconnect cannot resume intake implicitly; later intent requires current authority/version. |
+| CH-03 Revocation and visible limits | Race revoke against admission/control; reject new unauthorized effects. A delegate's resume after intake-intent delegation revocation rejects. Show broker intent, actual native outcome, uncertainty and residual resources separately. Reconnect cannot resume intake implicitly; later intent requires current authority/version. |
 | CH-04 Compatible evolution | Unknown required revision/profile rejects without effects; changed semantics cannot replay under the old operation identity or silently downgrade to another protocol. |
 | CH-05 Current boundary | Two organizations' members can use explicit shared-workspace grants. A foreign workspace, card or alias cannot bypass the same-workspace rejection or directional disclosure rules. |
 | CH-06 Equal ecosystem access | An unaffiliated implementation or competing application uses exactly the public capabilities and evidence criteria used by an affiliated product. Required capabilities have no private-only route. |
@@ -70,6 +71,13 @@ These are additional design cases, not executed tests. They supplement the core 
 
 Future cross-authority cases are gated by the complete [trust profile design](../spec/trust-and-control.md#future-cross-authority-profile-gate);
 CH-05 proves the initial boundary, not federation.
+
+CH-01, CH-06 and the independent role-pairing gate qualify portable interoperability-release
+claims. They do not require a product to wait for another coordinator before its own approved
+release. CH-02/03/05/07 supplement applicable product capability evidence; CH-04 applies when
+versioned negotiation is selected. A product may ship under its own documented contract and
+qualification while clearly withholding unsupported portable-interoperability claims. This
+distinction does not waive any selected capability's authorization, safety or native-evidence rules.
 
 ## Adoption measures
 

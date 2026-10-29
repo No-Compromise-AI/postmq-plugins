@@ -9,9 +9,9 @@ sets its purpose. The [public specification](spec/README.md) states its current 
 Anyone may propose a change through a public issue or pull request, including implementers
 of competing services. No PostMQ subscription, private repository, private planning record,
 paid review tool or commercial relationship is required. Contributions follow
-[CONTRIBUTING.md](CONTRIBUTING.md) and Apache-2.0. Implementing or forking the published
-material does not require a separate commercial agreement with PostMQ; license conditions
-still apply. This is not a grant of third-party rights, trademarks or certification.
+[CONTRIBUTING.md](CONTRIBUTING.md). Published material is licensed under Apache-2.0; that
+license's terms define the permissions granted. This governance document grants no additional
+license, covenant, third-party right, trademark right or certification.
 
 The founder is the initial steward. Current repository maintainers are identified by
 [CODEOWNERS](.github/CODEOWNERS); this file does not itself confer permissions. Maintainers

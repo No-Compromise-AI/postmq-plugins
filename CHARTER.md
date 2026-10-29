@@ -16,7 +16,8 @@ Founding charter, 2026-10-29. This states the project's purpose and commitments;
 2. **Open protocol, independent implementations.** Publish contracts that others can implement
    without PostMQ, supported by public conformance cases and interoperable SDKs and adapters.
 3. **Humans and agents are first-class participants.** Enable collaboration, bounded delegation,
-   interruption, redirection and oversight with explicit identity, permission and audit boundaries.
+   interruption, redirection and oversight within selected capabilities, with explicit identity,
+   permission and audit boundaries.
    Autonomy operates within granted authority; it cannot enlarge its own authority.
 4. **Coordination without dictating orchestration.** Standardize reusable coordination primitives.
    Adopters choose their workflows, application policy and how much control to delegate.

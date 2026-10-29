@@ -6,8 +6,10 @@ to selected capabilities; unsupported native operations remain explicitly unavai
 
 ## First-class human participation
 
-Humans may communicate directly, delegate bounded work, inspect authorized history and redirect
-or revoke authority. A human is not merely an agent's approval callback. Implementations MUST
+Humans may communicate through human-operated clients/sessions and authorized person-mailbox
+receipt, delegate bounded work, inspect authorized history and redirect or revoke authority.
+A profile need not add a separate human-compose operation or accounting exemption. A human
+is not merely an agent's approval callback. Implementations MUST
 distinguish the actual authenticated actor, the represented principal and the delegation used;
 an agent acting for a person MUST NOT be recorded as that person personally taking the action.
 Names, employer affiliation, repository URLs and provider labels are not identity proof.
@@ -69,4 +71,5 @@ a separately reviewed public profile must specify and test all of the following:
 | Abuse and interoperability | Replay, issuer confusion, malicious cards/URLs, amplification, loop budgets, downgrade, loss, retry and partial-commit cases against independent implementations, with documented unsupported branches. |
 
 No endpoint, token exchange, new grant or cross-workspace access is introduced by this gate.
-Same-workspace v1 qualification can proceed independently after its own design approvals.
+Initial-profile product qualification can proceed independently after its own design approvals;
+the portable interoperability claim has the separate public role-pairing gate.

@@ -52,7 +52,7 @@ in this design publication.
 The charter and [governance](../GOVERNANCE.md) govern all three stages. This publication is
 proposed design preceding candidate freeze. None of these gates has been passed by publishing it.
 
-This extraction gate prevents two competing specifications: public portable requirements
+These stages prevent two competing specifications: public portable requirements
 remain the design authority, while product-specific drafts remain product mappings until
 their portable wire content is reviewed and moved here. Neither an unpublished draft nor a
 repository layout is a hidden prerequisite for the claims made in these public documents.
