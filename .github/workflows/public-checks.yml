@@ -1,0 +1,43 @@
+{
+  "name": "Public repository checks",
+  "on": {
+    "pull_request": {},
+    "push": {
+      "branches": [
+        "main"
+      ]
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "jobs": {
+    "public-checks": {
+      "name": "Public repository checks",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 10,
+      "steps": [
+        {
+          "name": "Check out proposed code",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "persist-credentials": false,
+            "fetch-depth": 2
+          }
+        },
+        {
+          "name": "Verify checker regression tests",
+          "run": "python3 tools/run_tests.py"
+        },
+        {
+          "name": "Check repository policy and documentation",
+          "run": "python3 tools/check_public_repo.py"
+        },
+        {
+          "name": "Check patch whitespace",
+          "run": "git show --format= --check --diff-merges=first-parent HEAD"
+        }
+      ]
+    }
+  }
+}

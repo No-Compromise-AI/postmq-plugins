@@ -1,0 +1,32 @@
+{
+  "repository": {
+    "allow_squash_merge": true,
+    "allow_merge_commit": false,
+    "allow_rebase_merge": false,
+    "allow_auto_merge": true,
+    "delete_branch_on_merge": true,
+    "has_wiki": false,
+    "security_and_analysis": {
+      "secret_scanning": { "status": "enabled" },
+      "secret_scanning_push_protection": { "status": "enabled" }
+    }
+  },
+  "actions": {
+    "enabled": true,
+    "allowed_actions": "selected",
+    "sha_pinning_required": true
+  },
+  "selected_actions": {
+    "github_owned_allowed": false,
+    "verified_allowed": false,
+    "patterns_allowed": ["actions/checkout@*", "actions/setup-python@*"]
+  },
+  "workflow_permissions": {
+    "default_workflow_permissions": "read",
+    "can_approve_pull_request_reviews": false
+  },
+  "fork_pr_contributor_approval": { "approval_policy": "all_external_contributors" },
+  "vulnerability_alerts": true,
+  "automated_security_fixes": true,
+  "private_vulnerability_reporting": true
+}

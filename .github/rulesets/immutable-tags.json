@@ -1,0 +1,8 @@
+{
+  "name": "immutable-tags",
+  "target": "tag",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": { "ref_name": { "include": ["refs/tags/**"], "exclude": [] } },
+  "rules": [{ "type": "deletion" }, { "type": "update" }]
+}
