@@ -24,13 +24,13 @@ class IsolatedGitTestCase(unittest.TestCase):
         self.empty_git_directory.mkdir()
         # Change only this test process's environment; all Git operations remain real subprocesses.
         environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-        environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_TEMPLATE_DIR=str(self.empty_git_directory))
+        environment.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_ATTR_NOSYSTEM="1", GIT_TEMPLATE_DIR=str(self.empty_git_directory), XDG_CONFIG_HOME=str(self.empty_git_directory))
         isolation = patch.dict(os.environ, environment, clear=True)
         isolation.start()
         self.addCleanup(isolation.stop)
 
     def fixture_git(self, root, *arguments):
-        return subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "-c", f"core.hooksPath={self.empty_git_directory}", *arguments], capture_output=True, text=True, timeout=15)
+        return subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "-c", f"core.hooksPath={self.empty_git_directory}", "-c", f"core.excludesFile={os.devnull}", "-c", f"core.attributesFile={os.devnull}", *arguments], capture_output=True, text=True, timeout=15)
 
     def copy_tracked_files(self, source, destination):
         result = self.fixture_git(source, "ls-files", "-z")
@@ -297,7 +297,7 @@ class HostileGitFixtureTests(unittest.TestCase):
             empty = root / "empty-template"
             empty.mkdir()
             clean = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-            clean.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_TEMPLATE_DIR=str(empty), PYTHONDONTWRITEBYTECODE="1")
+            clean.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_ATTR_NOSYSTEM="1", GIT_TEMPLATE_DIR=str(empty), XDG_CONFIG_HOME=str(empty), PYTHONDONTWRITEBYTECODE="1")
             source = root / "source"
             cloned = subprocess.run(["git", "-C", str(root), "clone", "--no-hardlinks", str(check.ROOT), str(source)], env=clean, capture_output=True, text=True, timeout=15)
             self.assertEqual(cloned.returncode, 0, cloned.stdout + cloned.stderr)
@@ -321,7 +321,21 @@ class HostileGitFixtureTests(unittest.TestCase):
             hostile_template.mkdir()
             (hostile_template / "template-marker").write_text("must not enter fixture Git metadata")
             injected = dict(configs, GIT_DIR=str(root / "absent-git-dir"), GIT_WORK_TREE=str(root / "wrong-tree"), GIT_INDEX_FILE=str(root / "wrong-index"), GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.filemode", GIT_CONFIG_VALUE_0="false", GIT_TEMPLATE_DIR=str(hostile_template))
-            for label, environment, ignored_file in (("hostile-global-and-system", configs, False), ("ignored-local-artifact", clean, True), ("injected-GIT-environment", injected, False)):
+            xdg_ignore = root / "hostile-xdg-ignore"
+            (xdg_ignore / "git").mkdir(parents=True)
+            (xdg_ignore / "git/ignore").write_text("AGENTS.md\nCLAUDE.md\n")
+            ignore_environment = dict(clean, XDG_CONFIG_HOME=str(xdg_ignore))
+            ignore_probe = subprocess.run(["git", "-C", str(source), "check-ignore", "--no-index", "AGENTS.md", "CLAUDE.md"], env=ignore_environment, capture_output=True, text=True, timeout=15)
+            self.assertEqual(ignore_probe.returncode, 0, ignore_probe.stdout + ignore_probe.stderr)
+            self.assertEqual(set(ignore_probe.stdout.splitlines()), {"AGENTS.md", "CLAUDE.md"})
+            xdg_attributes = root / "hostile-xdg-attributes"
+            (xdg_attributes / "git").mkdir(parents=True)
+            (xdg_attributes / "git/attributes").write_text("* text eol=crlf\n")
+            attributes_environment = dict(clean, XDG_CONFIG_HOME=str(xdg_attributes))
+            attributes_probe = subprocess.run(["git", "-C", str(source), "check-attr", "eol", "--", "AGENTS.md"], env=attributes_environment, capture_output=True, text=True, timeout=15)
+            self.assertEqual(attributes_probe.returncode, 0, attributes_probe.stdout + attributes_probe.stderr)
+            self.assertEqual(attributes_probe.stdout.strip(), "AGENTS.md: eol: crlf")
+            for label, environment, ignored_file in (("hostile-global-and-system", configs, False), ("ignored-local-artifact", clean, True), ("injected-GIT-environment", injected, False), ("default-XDG-ignore", ignore_environment, False), ("default-XDG-attributes", attributes_environment, False)):
                 with self.subTest(case=label):
                     artifact = source / ".DS_Store"
                     if ignored_file:
