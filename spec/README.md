@@ -32,23 +32,25 @@ negative acceptance cases. There is no executable PmP protocol implementation, p
 wire schema, profile-enabled Agent Card, custom A2A binding or interoperability certification
 in this design publication.
 
-Before a portable wire release, maintainers must publish and review together:
+## Publication stages
 
-1. A complete operation/type/error inventory, immutable version identifiers and binding rules.
-2. Exact field encodings, canonicalization and signature/digest domains, idempotency scope,
-   retention, deadlines, pagination and event-resynchronization behavior.
-3. Cross-record authorization, ordering, lease/admission/fence and recovery predicates, with
-   transition tables and migration/rollback rules; shape validation alone is insufficient.
-4. A public mapping for every required capability and every unsupported branch, complete
-   positive/negative fixtures, and executable conformance with fault and native-boundary evidence.
-5. Independent review and a release freeze tying the published requirements, schemas,
-   reference implementations and evidence to the same version.
+1. **Candidate wire freeze.** Publish and review a complete operation/type/error inventory;
+   immutable candidate identifiers and binding rules; exact encodings, canonicalization and
+   signature/digest domains; idempotency, retention, deadlines, pagination and resynchronization;
+   cross-record authorization, ordering, admission/fence and recovery predicates; transition
+   tables and migration/rollback rules. Include every required capability and unsupported branch,
+   plus positive/negative case definitions and fixtures. No private-only detail may be necessary
+   to implement the candidate. Freeze means a reproducible development target, not qualification.
+2. **Separately authorized development.** Build independent role implementations and an executable
+   public conformance runner against the candidate. Ambiguities discovered during implementation
+   require reviewed candidate revisions and updated fixtures, never silent reinterpretation.
+3. **Qualified portable release.** Pass the [independent role-pairing gate](../conformance/README.md#independent-implementation-and-release-gate),
+   including fault/recovery and selected native-boundary evidence. Publish independent review and
+   an immutable release tying requirements, schemas, implementations, runner and evidence to exact
+   revisions. Required failures/skips block qualification. Deployment authorization is separate.
 
-The charter and [governance](../GOVERNANCE.md) govern publication decisions; they do not
-declare a draft to be implemented. After wire freeze and separately authorized development,
-the first portable interoperability release also requires the [two-implementation qualification
-gate](../conformance/README.md#independent-implementation-and-release-gate). A frozen candidate
-may be used for development before qualification, with its unqualified status explicit.
+The charter and [governance](../GOVERNANCE.md) govern all three stages. This publication is
+proposed design preceding candidate freeze. None of these gates has been passed by publishing it.
 
 This extraction gate prevents two competing specifications: public portable requirements
 remain the design authority, while product-specific drafts remain product mappings until

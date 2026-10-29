@@ -11,7 +11,7 @@
 | Independent coordinators | Implement the same public selected profile with their own storage, identity service and operational choices. Required contracts cannot depend on PostMQ's .NET/SQL deployment, scopes, internal planning tools or paid services. |
 
 This division is a PmP design choice, not a statement that MCP or A2A lacks coordination
-features. The [MCP specification](https://modelcontextprotocol.io/specification/2025-11-25)
+features. The [MCP specification](https://modelcontextprotocol.io/specification/2026-07-28)
 defines its own tools, resources, prompts and client/server features, with consent and safety
 responsibilities. The [A2A fit/gap analysis](a2a/README.md) pins its separate upstream version
 and distinguishes base guarantees from the additional PmP requirements. Respect both upstream

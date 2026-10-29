@@ -24,19 +24,29 @@ implementing it and authorizing deployment are separate decisions.
 ## Independent implementation and release gate
 
 The [charter](../CHARTER.md) requires practical independence, beyond a permissive license.
-Before the first portable interoperability release, freeze a complete public candidate with
-the operation/schema/error, authority, state, transport and migration detail in the
-[specification index](../spec/README.md). Then, under separate implementation authority:
+Before the first portable interoperability release, complete stage 1 (candidate wire freeze)
+in the [specification index](../spec/README.md#publication-stages), including public operation/schema/error,
+authority, state, transport, migration and case/fixture definitions. Under separate implementation
+authority, stage 2 builds the implementations and runner; stage 3 qualifies them as follows:
 
-1. Build at least two independent implementations of the selected profile. One may be PostMQ;
-   the other must operate from public artifacts without a PostMQ service or private dependency.
-   Disclose teams, shared libraries and engines. A second wrapper around the same engine does
-   not satisfy independence. Common transport or cryptographic libraries are not by themselves
-   disqualifying; the protocol authority and state transitions must be independently implemented.
-2. Run the same public applicable positive and negative cases against both. Exercise actual
-   communication in both supported directions, persistence/restart, adverse timing and recovery.
-   Qualify selected native control/resource boundaries separately. A mock, schema validator or
-   local documentation gate cannot substitute for this evidence.
+1. Identify roles: a **coordinator** owns canonical acceptance, authority and persisted state;
+   a **participant client/adapter** originates or receives operations under that coordinator;
+   an optional **gateway** maps a declared external binding to that same authority. Build two
+   independent coordinators (A and B) and two independent participant implementations (a and b)
+   for the selected profile. One set may be PostMQ. Coordinator B must run from public artifacts
+   with its own authority/storage and no PostMQ service or private dependency. Participants
+   use their selected coordinator; they do not need their own competing authority store.
+   Disclose teams, shared libraries and engines. A second wrapper around the same protocol
+   engine is not independent. Shared transport/cryptographic libraries are not by themselves
+   disqualifying; coordinator state/authority and participant protocol behavior are independently built.
+2. In deployment A, enroll a and b into one authorized disposable workspace under coordinator A;
+   test a→b send/exact reply and b→a send/exact reply, plus supported correction/handoff. Repeat
+   in a separate deployment under coordinator B. Each deployment has its own grants, records
+   and resource authority; no message crosses coordinators or workspaces. Run the same public
+   applicable positive/negative, persistence/restart, adverse-timing and recovery cases on both.
+   Coordinator-to-coordinator exchange is neither required nor permitted for initial-profile
+   qualification. Optional gateways and native control/resource capabilities require their own
+   selected-role boundary evidence. A mock, schema validator or documentation gate is insufficient.
 3. Publish sanitized commands, revisions, fixtures, results, limitations and an issue/erratum path.
    A new implementer must be able to reproduce the cases without internal accounts or instructions.
    Fix ambiguities in the public specification through review; do not hide them in a private test.
@@ -50,7 +60,7 @@ These are additional design cases, not executed tests. They supplement the core 
 
 | Case | Required acceptance evidence |
 |---|---|
-| CH-01 Independent implementability | A separate implementation uses only public contract material and its own authority/storage; no PostMQ login, private schema or vendor-specific required feature. |
+| CH-01 Independent implementability | Independent coordinator uses only public contracts and its own authority/storage; participants cross-test against each coordinator's separate authorized workspace as above. No PostMQ service, private schema or vendor-specific required feature for the independent coordinator, and no cross-authority traffic. |
 | CH-02 Direct and delegated humans | Direct human action and agent-on-behalf action preserve distinct actors, exact subjects and bounded grants; names or model instructions cannot enroll or authorize. |
 | CH-03 Revocation and visible limits | Race revoke against admission/control; reject new unauthorized effects. Show broker intent, actual native outcome, uncertainty and residual resources separately. Reconnect cannot resume intake implicitly; later intent requires current authority/version. |
 | CH-04 Compatible evolution | Unknown required revision/profile rejects without effects; changed semantics cannot replay under the old operation identity or silently downgrade to another protocol. |

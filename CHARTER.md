@@ -31,11 +31,13 @@ Founding charter, 2026-10-29. This states the project's purpose and commitments;
 | PostMQ | One product and implementation: hosting, persistence, integrations, administration and a useful experience of those contracts. Its implementation choices are not universal protocol requirements. |
 | Applications | Workflows, task planning, business rules, scheduling strategy and user experience, within the participants' authority and selected protocol guarantees. |
 
-LoopThat, GPCloud, RackCompass and competing products use the same public contracts. None
-receives privileged protocol semantics. No PostMQ account, private specification, proprietary
-runtime or internal planning service may be required to independently implement a released PmP profile.
+Affiliated products such as LoopThat, GPCloud and RackCompass, and competing products, are held
+to the same public contracts. None receives privileged protocol semantics. No PostMQ account,
+private specification or internal planning service may be required to independently implement
+a released PmP profile. A proprietary runtime cannot be a universal prerequisite; an optional
+integration may require its named runtime, with that dependency and support limits explicit.
 
-PmP works with complementary protocols, including MCP and A2A. Integration does not imply
+PmP is designed to complement protocols including MCP and A2A. Integration does not imply
 permission, native control or interoperability beyond what has been demonstrated.
 
 Cross-organization collaboration is part of the mission. The initial design operates within

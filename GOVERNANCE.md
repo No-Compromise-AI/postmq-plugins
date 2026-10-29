@@ -77,12 +77,16 @@ certification program or badge is established here. Anyone may challenge a claim
 reproduction; maintainers record the result and correct unsupported listings or guidance. A claim
 must not stay advertised as passing after its required evidence is invalidated.
 
-The first portable interoperability release requires two independently built implementations
-passing the same published applicable cases and exchanging in both supported directions. One
-may be PostMQ. The other must be implementable from public material without a PostMQ service
-or private artifacts; a renamed wrapper around the same protocol engine is not independent.
-Publish shared dependencies and limitations rather than presenting them as independent evidence.
-Individual development builds may exist before this gate; they cannot claim that release qualified.
+The first portable interoperability release requires the [role-pairing gate](conformance/README.md#independent-implementation-and-release-gate):
+two independently built coordinators, one of which may be PostMQ, and two independently built
+participant clients, cross-tested in separate single-authority deployments. Each coordinator
+passes the same public applicable cases using its own storage/authority, with clients of both
+implementations exchanging send, exact reply and supported correction/handoff within its workspace.
+Coordinator-to-coordinator or cross-authority exchange is neither required nor permitted by the
+initial profile. The independent coordinator must operate from public material without a PostMQ
+service or private artifacts; a renamed wrapper around the same protocol engine is not independent.
+Publish shared dependencies and limitations. Development candidates may exist before this gate;
+they cannot claim that release qualified.
 
 For each release, record independent implementations, third-party adapters, cross-vendor exercised
 paths and competing products built on public contracts. Report evidence dates and missing evidence,
