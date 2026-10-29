@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "generator": "postmq/claude-plugin",
+  "plugin_versions": {
+    "postmq-session": "1.11.0",
+    "postmq-wake": "1.11.0",
+    "postmq-claim": "1.11.0"
+  },
+  "files": {
+    ".claude-plugin/README.md": {
+      "sha256": "b7cf1feb05120310601b17c59e2a386456922825fc1574d4516ad80f627e382f",
+      "executable": false
+    },
+    ".claude-plugin/marketplace.json": {
+      "sha256": "a1dee3c30b912541ee1fec6618d60ad9ed21bc5adbb18c80a24d1f4d0bdac7f3",
+      "executable": false
+    },
+    "plugins/postmq-claim/.claude-plugin/plugin.json": {
+      "sha256": "bb3e137dc9e9e10a148bc48f046a3b3b1c69913f839a3293fa9c5cd2a92f3883",
+      "executable": false
+    },
+    "plugins/postmq-claim/postmq-kit.json": {
+      "sha256": "f17bc4b00afe2fadd5853f6b8d5e01f0ca311739fc976e431af35dddefd7d2e7",
+      "executable": false
+    },
+    "plugins/postmq-claim/skills/claim/SKILL.md": {
+      "sha256": "cc43da5a54798fcc581bdf9312b84fdd70ef240753b713739e3fddb976ba258e",
+      "executable": false
+    },
+    "plugins/postmq-claim/tools/postmq-claim.py": {
+      "sha256": "79db0e22f94488ca18bc68c58270788fe6f2fb2e2cc2e980f6746d4e0e860257",
+      "executable": true
+    },
+    "plugins/postmq-claim/tools/postmq_claim.py": {
+      "sha256": "b1a9d8054e5e7664defea0f73e5e08a951ccce7a1613c667d9967605ed41cb07",
+      "executable": false
+    },
+    "plugins/postmq-session/.claude-plugin/plugin.json": {
+      "sha256": "f983ef7f6102238d1b340fb306c2036a551b5dc63b84505b7d983ff369f21ea6",
+      "executable": false
+    },
+    "plugins/postmq-session/hooks/hooks.json": {
+      "sha256": "d842e8ded191e602cb228aaedd353c55dfc38072334d7c0a74f54f40808f7172",
+      "executable": false
+    },
+    "plugins/postmq-session/hooks/postmq-session-start.sh": {
+      "sha256": "c573145784babc83fc4e5ac79b3490dcd97a1297a36cc99d9d7e3bf00425ba7b",
+      "executable": true
+    },
+    "plugins/postmq-session/hooks/postmq-usage-reporter.py": {
+      "sha256": "d824c270f560ceefbd2ff5548bc19405240dbbefc0c436a739c0394f65b60beb",
+      "executable": false
+    },
+    "plugins/postmq-session/postmq-kit.json": {
+      "sha256": "5a51d9f293d100c68a4f2b5aec9b9ab6bf5011b6f4fc3b54f9da54368373595c",
+      "executable": false
+    },
+    "plugins/postmq-session/skills/end-session/SKILL.md": {
+      "sha256": "16c3574af3dbcb27e3de4db3dfcb939696d452e89619006022d64463e2b9bedc",
+      "executable": false
+    },
+    "plugins/postmq-session/skills/start-session/SKILL.md": {
+      "sha256": "e2f72527732cdcd251d06a2de09c2c1e097fe697eab59ba45c22a3dd4f1b5f2f",
+      "executable": false
+    },
+    "plugins/postmq-wake/.claude-plugin/plugin.json": {
+      "sha256": "171899d975c3d1f3def4c4f78496dee3673d584ac70e42a61723adae11cab619",
+      "executable": false
+    },
+    "plugins/postmq-wake/hooks/hooks.json": {
+      "sha256": "feb787b1ed5f8b22fe7487ccbe8ca6383eccd66207a7fd47a2e2195211a0a55d",
+      "executable": false
+    },
+    "plugins/postmq-wake/hooks/postmq-wake.py": {
+      "sha256": "cff87fc9a558fddb10b5817c3940acfc7d47bfbbe32b3d28552e01d43f9a66cd",
+      "executable": true
+    },
+    "plugins/postmq-wake/postmq-kit.json": {
+      "sha256": "b511062bbdb4f768a4b712efd5a680632ea8c21672c7ead94762f313fd36dd4d",
+      "executable": false
+    },
+    "plugins/postmq-wake/skills/wake/SKILL.md": {
+      "sha256": "1dd68c1e9f385dc5c78d5a16643b6fb4d461baf886fa7f1dbba0b542ddcf81d6",
+      "executable": false
+    }
+  }
+}

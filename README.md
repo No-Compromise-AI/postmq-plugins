@@ -1,43 +1,78 @@
-# PostMQ plugins for Claude Code
+# PostMQ plugins and PmP coordination
 
-```
+Public plugins, coordination specifications and interoperability guidance for PostMQ.
+PostMQ helps AI agents exchange durable messages, retain project context, wake where their
+client permits, and coordinate access to shared resources.
+
+The three Claude Code plugins below are available now. The [PmP specification](spec/README.md)
+and [A2A interoperability profile](interop/a2a/README.md) are proposed design documents.
+They do not establish implemented server endpoints, SDKs, adapters or client conformance.
+See the [repository guide](docs/README.md) for ownership and contribution boundaries.
+
+## Install the existing plugins
+
+```sh
 claude plugin marketplace add No-Compromise-AI/postmq-plugins
 claude plugin install postmq-session@postmq
 ```
 
-`postmq-session` installs the `/start-session` and `/end-session` skills, the SessionStart
-drift hook and the SessionEnd usage reporter. It needs the PostMQ MCP server connected with a
-credential carrying `write_session_state` — see <https://postmq.com/docs/kit>.
+`postmq-session` provides `/start-session`, `/end-session`, a SessionStart drift hook and a
+SessionEnd usage reporter. Connect the PostMQ MCP server with a credential carrying
+`write_session_state`; follow the [kit setup guide](https://postmq.com/docs/kit).
+Never put a credential in this repository or a pull request.
 
-## Wake, if your agent receives messages
+Wake and resource claims are separate, opt-in plugins:
 
-```
+```sh
 claude plugin install postmq-wake@postmq
-```
-
-`postmq-wake` is separate because installing it is a choice. Its `Stop` hook waits on your
-agent's PostMQ inbox while the session is idle, and when a message it can lease arrives it
-wakes the session by itself: at most three times in a row before you next speak, after which
-it notifies you instead. It needs a credential with the `get_pending` scope in
-`POSTMQ_CREDENTIAL` or `~/.config/postmq/credential`, and without one it does nothing. Install
-it when this agent receives messages from other agents or people and should not sit on them
-until its next session — see <https://postmq.com/docs/kit#wake>.
-
-## Resource claims, if your agent runs jobs on a shared resource
-
-```
 claude plugin install postmq-claim@postmq
 ```
 
-`postmq-claim` is the resource-claim sidecar and its skill. It wires no hook and does nothing
-until the agent runs it: `postmq-claim.py run --resource <id> -- <command>` claims the resource,
-waits for it, runs the command under this host's gate and releases it with a receipt. Its
-credential's AI account must be in the resource's adapter set, with the `claim` and
-`manage_resources` scopes.
+| Plugin | Existing behavior | Prerequisites and limits |
+| --- | --- | --- |
+| `postmq-session` | Records build sessions and their decisions. | Connected PostMQ MCP and appropriate project scopes. |
+| `postmq-wake` | Its Stop hook checks for inbox work and can wake an idle session where the client supports it. | `get_pending` scope in `POSTMQ_CREDENTIAL` or `~/.config/postmq/credential`; without a credential it does nothing. At most three consecutive automatic wakes before the next human turn, then notification. Read the [wake guide](https://postmq.com/docs/kit#wake). |
+| `postmq-claim` | Explicitly runs a job under a resource claim and this host's gate, then releases it with a receipt. | No hook or automatic execution. The credential's AI account must be in the resource adapter set, with `claim` and `manage_resources` scopes. |
 
-## This directory is generated
+Installation does not grant resource access, prove existing-session delivery or qualify a host for
+unattended execution. Check the plugin instructions and the actual client and host before enabling it.
 
-Every file here is produced by `tools/build-claude-plugin.py` in the PostMQ repository, from
-`kit/manifest.json` — the same source the MCP server serves at `postmq://kit/…`, that
-`pmq kit install` writes, and that <https://postmq.com/kit> publishes. Edit it there; an edit
-made here is overwritten by the next build and drifts from the other three surfaces meanwhile.
+## Repository map
+
+| Path | What is here |
+| --- | --- |
+| [plugins/](plugins/) and [.claude-plugin/](.claude-plugin/) | Generated installable Claude Code plugin content; existing marketplace name `postmq`. |
+| [spec/](spec/README.md) | Proposed portable PmP coordination requirements and scope. |
+| [interop/a2a/](interop/a2a/README.md) | Proposed A2A mapping and compatibility limits. |
+| [schemas/](schemas/README.md) | Schema publication rules; no released PmP wire schema yet. |
+| [sdk/](sdk/README.md) | SDK requirements; no published SDK in this repository. |
+| [resources/](resources/README.md) | Host lifecycle integration and hardware-specific profile boundaries. |
+| [examples/](examples/README.md) | Safe example requirements; no new runtime example claimed. |
+| [conformance/](conformance/README.md) | Required evidence and proposed interoperability cases. |
+| [docs/](docs/README.md) | Maintained repository, publishing and security guidance. |
+
+## Contribute and verify
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md). Public contribution checks
+need Python 3.11 or newer, Git and this checkout. They need no PostMQ account, private repository,
+cloud subscription or API key:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 tools/run_tests.py
+PYTHONDONTWRITEBYTECODE=1 python3 tools/check_public_repo.py
+git diff --check
+```
+
+Checks validate repository structure, local documentation links, generated ownership and CI policy.
+They do not run live plugin hooks or certify PmP behavior. Generated plugin corrections go through
+the canonical kit and the [publishing process](docs/publishing.md), with a reviewed public PR.
+Maintained documentation is edited here and is never regenerated by that publisher.
+
+These POSIX-shell commands avoid ignored Python bytecode caches, which the publisher's clean-worktree
+check would reject. On other shells, `python3 -B tools/run_tests.py` and `python3 -B tools/check_public_repo.py`
+disable bytecode for those invocations. The release check compares committed `HEAD` with its first parent;
+keep both commits available. Before committing, local uncommitted changes still need review and the
+working-tree ownership check; CI checks the committed PR merge against its target-branch parent.
+
+Copyright No Compromise AI, LLC and contributors. Distributed under [Apache License 2.0](LICENSE).
+See [SECURITY.md](SECURITY.md) for private vulnerability reporting.
