@@ -40,7 +40,10 @@ identity and never creates an automatic replacement attempt.
 Advertised support is not authorization or physical evidence. Discovery must authenticate
 the service and apply its current access policy; execution still checks the actual actor,
 workspace/context/session binding and selected capability. This design supports one
-workspace per authorized interaction and no cross-workspace federation.
+workspace per authorized interaction and no cross-workspace federation in this initial profile.
+The charter's broader mission requires a future separately reviewed
+[cross-authority trust profile](../../spec/trust-and-control.md#future-cross-authority-profile-gate);
+an A2A connection or Agent Card cannot enable it implicitly. PA-04 still rejects foreign-workspace requests.
 
 ## Identity, channel and task mapping
 

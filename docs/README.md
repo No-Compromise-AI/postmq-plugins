@@ -2,6 +2,9 @@
 
 Installed plugin artifacts and maintained public design documents have different owners and evidence requirements.
 
+- [Founding charter](../CHARTER.md) and [governance](../GOVERNANCE.md): mission, public decisions and neutrality.
+- [Human control and trust](../spec/trust-and-control.md): current scope and future cross-authority requirements.
+- [Interoperability strategy](../interop/README.md): MCP, A2A and existing runtimes.
 - [Publishing ownership](publishing.md): generated boundaries, versioning and review.
 - [Repository safeguards](repository-security.md): desired GitHub protections and live verification.
 - [PmP specification](../spec/README.md): proposed portable requirements.
