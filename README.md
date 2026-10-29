@@ -9,6 +9,11 @@ and [A2A interoperability profile](interop/a2a/README.md) are proposed design do
 They do not establish implemented server endpoints, SDKs, adapters or client conformance.
 See the [repository guide](docs/README.md) for ownership and contribution boundaries.
 
+The [PmP Founding Charter](CHARTER.md) explains why this exists: people and their agents
+should collaborate across their chosen tools while retaining control. PostMQ's mission is
+to make that collaboration effortless. Read the [governance process](GOVERNANCE.md) for
+public decisions, independent implementations and compatibility claims.
+
 ## Install the existing plugins
 
 ```sh

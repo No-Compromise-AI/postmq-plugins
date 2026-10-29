@@ -4,13 +4,15 @@
 
 PmP is the portable protocol design for durable agent addressing, communication, lifecycle,
 supervision and resource coordination. PostMQ is a product that can implement and host these
-contracts. The name is **PmP**, without an expanded name. Product releases, plugin versions,
+contracts. The name is **PmP**, with no canonical expansion; optional editorial interpretations
+are nonnormative as described in the [charter](../CHARTER.md). Product releases, plugin versions,
 protocol revisions and interoperability profiles have separate versions.
 
 ## Source of truth
 
 [PmP core](pmp-core.md) is the authoritative public statement of the portable requirements
-published at this design status. [The A2A profile](../interop/a2a/profile.md) adds proposed
+published at this design status. [Human control and trust](trust-and-control.md) supplements
+those requirements. [The A2A profile](../interop/a2a/profile.md) adds proposed
 interoperability requirements; [its fit/gap analysis](../interop/a2a/README.md) explains what
 is reused. A product mapping may add implementation details but cannot weaken these public
 requirements while claiming the corresponding PmP profile.
@@ -41,6 +43,12 @@ Before a portable wire release, maintainers must publish and review together:
    positive/negative fixtures, and executable conformance with fault and native-boundary evidence.
 5. Independent review and a release freeze tying the published requirements, schemas,
    reference implementations and evidence to the same version.
+
+The charter and [governance](../GOVERNANCE.md) govern publication decisions; they do not
+declare a draft to be implemented. After wire freeze and separately authorized development,
+the first portable interoperability release also requires the [two-implementation qualification
+gate](../conformance/README.md#independent-implementation-and-release-gate). A frozen candidate
+may be used for development before qualification, with its unqualified status explicit.
 
 This extraction gate prevents two competing specifications: public portable requirements
 remain the design authority, while product-specific drafts remain product mappings until

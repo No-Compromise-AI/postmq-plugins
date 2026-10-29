@@ -4,6 +4,10 @@ Issues and pull requests are welcome. Public visibility lets anyone propose a ch
 grant write access, execution permission, resource access or publishing authority. Report vulnerabilities
 [privately](SECURITY.md), not in a public issue.
 
+Read the [charter](CHARTER.md) and [governance process](GOVERNANCE.md). Protocol proposals
+must explain their charter, security and compatibility impact, including how an independent
+implementation can meet the same public requirements. Competing implementations are welcome.
+
 ## Choose the source
 
 Maintained guidance, proposed specifications, interoperability profiles and repository checks are edited

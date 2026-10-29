@@ -10,7 +10,7 @@ control or resource capabilities must be reported as unavailable rather than sim
 | Identity | Meaning and boundary |
 |---|---|
 | Principal | Authenticated human or service actor; authority comes from current grants, not a name or role asserted in a message. A logical agent account is a managed identity, not a human-login credential. |
-| Workspace | Security boundary. This design routes within one workspace; it does not define cross-workspace federation. |
+| Workspace | Security boundary. The initial profile routes within one explicitly authorized workspace, including members from different organizations. Independent workspace federation is a future profile, unsupported here; organization names do not grant membership. |
 | Device / installation | Protected enrollment for one installation within a workspace, with key custody, rotation and revocation. A hostname or copied API key is not device proof. |
 | Client | Provider/application family and local adapter capability; a mutable label such as a client name is not a unique address or permission. One process may host multiple sessions. |
 | Project / context | Explicit authorized project or distinguished general-mail context. Repository and working-directory hints can suggest a mapping but never grant access. |
@@ -24,6 +24,10 @@ subject and operation authority. A copied credential, provider-native thread ID,
 label or repository URL MUST NOT select another installation's session or inherit its
 runtime authority. Enrollment, attachment and observation MUST NOT implicitly resume a
 stopped session. Service actors do not acquire human ownership by enrollment.
+
+The [human control and trust requirements](trust-and-control.md) define direct human participation,
+bounded delegation, revocation, visible control outcomes and the future cross-authority design gate.
+They preserve the initial profile's same-workspace enforcement and current authorized intent rules.
 
 ## Durable communication
 
