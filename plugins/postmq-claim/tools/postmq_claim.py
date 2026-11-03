@@ -17,7 +17,8 @@ afterwards, is a PROVIDER's — an object this module drives and never sees insi
 `postmq-claim.py` is the command line; this file is the library it imports, installed beside it. A provider is any
 object with the nine methods below, built by a no-argument factory named on the command line as
 `--provider path/to/file.py:factory` — or imported and passed to `run()`, `reconcile_resource()` or `serve()`. With no
-provider the GENERIC one is used: a POSIX process group, which is the reference implementation of the protocol.
+provider the GENERIC one is used — a POSIX process group, or on Windows a job object — which is the reference
+implementation of the protocol.
 
 THE PROVIDER PROTOCOL (the interface fixed with the GB10 adapter on MovieStudio #125; D-RC-12, D-RC-13, D-RC-14).
 The SDK owns the gate, the journal, the claim, the wait, the renewals, the admission sequence, the release pipe and
@@ -108,14 +109,21 @@ EXIT STATUS
     3  configuration       4  never granted (denied, timed out, withdrawn, cancelled)
     5  granted but not launched (the launch sequence stopped before exec)
     6  the claim was lost while the job ran (the job was stopped and released late)
-    130/143  interrupted (SIGINT/SIGTERM) — cancelled while queued, or the job stopped and released
+    130/143  interrupted (SIGINT/SIGTERM) — cancelled while queued, or the job stopped and released;
+             on Windows 130/149 (Ctrl-C/Ctrl-Break)
 
-Standard library only, Python 3.8+. POSIX (Linux, macOS): the gate is flock(2) and the job's group is a POSIX session.
-It does not run on Windows yet.
+Standard library only, Python 3.8+.
+    POSIX (Linux, macOS): the gate is flock(2) and the job's container is a POSIX session.
+    Windows: the gate is a one-byte msvcrt lock (LockFile) and the job's container is a job object with
+    kill-on-close and no breakaway, so every process the job starts is in it and none outlives this sidecar — when
+    the sidecar exits, however it exits, Windows kills what is left. The job is a console process group of its own:
+    an interrupt reaches it as Ctrl-Break, and a stop that outlasts the grace terminates the job object. The command
+    is started without a shell; a .cmd or .bat file is run by cmd.exe, which re-parses its arguments.
 """
 
 import argparse
 import datetime
+import errno
 import hashlib
 import importlib.util
 import json
@@ -138,12 +146,20 @@ import urllib.request
 import ipaddress
 import http.client
 
+WINDOWS = os.name == "nt"
+
 try:
     import fcntl
-except ImportError:  # pragma: no cover - Windows
+except ImportError:  # Windows: the gate is msvcrt's byte-range lock instead
     fcntl = None
 
-VERSION = "1.2.0"
+if WINDOWS:  # pragma: no cover - exercised natively on Windows (tools/tests/postmq-claim, run on the host itself)
+    import ctypes
+    import msvcrt
+    import winreg
+    from ctypes import wintypes
+
+VERSION = "1.3.0"
 DEFAULT_API_URL = "https://api.postmq.com"
 PROVIDER = "generic"
 ADVISORY = {"ownership": "advisory", "descendant_supervision": "advisory", "memory_accounting": "advisory",
@@ -277,6 +293,16 @@ def host_key() -> str:
     explicit = os.environ.get("POSTMQ_HOST_KEY", "").strip()
     if explicit:
         return explicit[:512]
+    if WINDOWS:
+        # MachineGuid, read from the registry: no subprocess, and no WMI, which a standard account may not query.
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0,
+                                winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+                value = str(winreg.QueryValueEx(key, "MachineGuid")[0]).strip()
+            if value:
+                return "machine-guid:" + value
+        except OSError:
+            pass
     for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
         try:
             with open(path, "r", encoding="ascii") as handle:
@@ -304,9 +330,18 @@ def _redact(text: str) -> str:
 
 
 def log(message: str) -> None:
-    # Every diagnostic goes to stderr, redacted. stdout belongs to the job.
-    sys.stderr.write("postmq-claim: " + _redact(message) + "\n")
-    sys.stderr.flush()
+    # Every diagnostic goes to stderr, redacted. stdout belongs to the job. Best effort: a stderr nobody reads any more
+    # — a dropped SSH session, a closed terminal — raises on write, and a diagnostic must never stop a release halfway.
+    # From the first failure on, stderr is the null device: Python's own flush at exit would otherwise fail as well and
+    # turn the command's exit status into 120.
+    try:
+        sys.stderr.write("postmq-claim: " + _redact(message) + "\n")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        try:
+            sys.stderr = open(os.devnull, "w")
+        except OSError:
+            pass
 
 
 def _iso(value: datetime.datetime) -> str:
@@ -603,6 +638,32 @@ def parse_entry(line: str):
     return None
 
 
+O_BINARY = getattr(os, "O_BINARY", 0)  # Windows: no CRLF translation in the journal
+
+
+def _try_lock(fd):
+    """The gate's lock, taken without waiting, or BlockingIOError when another process holds it: flock(2) on POSIX,
+    a one-byte msvcrt lock on Windows. Both are released by the kernel when the holder exits, however it exits."""
+    if not WINDOWS:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    os.lseek(fd, 0, os.SEEK_SET)
+    try:
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    except OSError as error:
+        if error.errno in (errno.EACCES, errno.EDEADLK):
+            raise BlockingIOError(error.errno, "the gate is held by another process") from None
+        raise
+
+
+def _unlock(fd):
+    if not WINDOWS:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return
+    os.lseek(fd, 0, os.SEEK_SET)
+    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+
 class HostGate:
     """$POSTMQ_HOST_STATE/resources/<resource_id>/{lock, journal}: one per resource per host, shared by every sidecar
     and reconciler on it (§8.3). The journal is append-only, fsynced per entry and read newest-first; a torn last line
@@ -620,11 +681,11 @@ class HostGate:
     def acquire(self, timeout: float, stop=None) -> bool:
         """The gate, waiting at most `timeout` — and no longer than `stop()` stays false, so an interrupt received
         while another launcher holds the gate is answered at once rather than after the bound."""
-        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT | O_BINARY, 0o600)
         deadline = time.monotonic() + timeout
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _try_lock(fd)
                 self._fd = fd
                 return True
             except BlockingIOError:
@@ -636,7 +697,7 @@ class HostGate:
     def release(self):
         if self._fd is not None:
             try:
-                fcntl.flock(self._fd, fcntl.LOCK_UN)
+                _unlock(self._fd)
             finally:
                 os.close(self._fd)
                 self._fd = None
@@ -647,7 +708,7 @@ class HostGate:
 
     def append(self, line: str):
         created = not os.path.exists(self.journal_path)
-        fd = os.open(self.journal_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        fd = os.open(self.journal_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | O_BINARY, 0o600)
         try:
             # The WHOLE record, or an error: a short write (a full volume) that reported success would let the job
             # start with only part of `launched` on disk — a torn line, which reads as "never launched".
@@ -660,8 +721,9 @@ class HostGate:
             os.fsync(fd)
         finally:
             os.close(fd)
-        if created:
-            # The new directory entry is durable only once its directory is.
+        if created and not WINDOWS:
+            # The new directory entry is durable only once its directory is. (NTFS journals its metadata, and
+            # Windows cannot open a directory as a file descriptor.)
             dir_fd = os.open(self.dir, os.O_RDONLY)
             try:
                 os.fsync(dir_fd)
@@ -695,6 +757,8 @@ def epoch_dead(entries, fence: int) -> bool:
 
 def process_start(pid: int):
     """A token for when `pid` started, so a reused pid is never mistaken for the job; None when it does not exist."""
+    if WINDOWS:
+        return _win_process(pid)[1]
     try:
         with open(f"/proc/{pid}/stat", "r", encoding="ascii", errors="replace") as handle:
             stat = handle.read()
@@ -712,6 +776,8 @@ def process_start(pid: int):
 
 
 def pid_alive(pid: int) -> bool:
+    if WINDOWS:
+        return _win_process(pid)[0] != GROUP_GONE
     try:
         os.kill(pid, 0)
         return True
@@ -729,7 +795,19 @@ def group_state(pgid: int, start) -> str:
     """Whether the job's process group still has a member: gone, alive, or unverifiable. A group whose leader pid now
     belongs to a process that started at another time is not this job's — the pgid was reused — and that start-time
     evidence is the ONLY thing that turns a group we cannot inspect into "gone". A permission refusal on its own
-    proves nothing: a job that changed its OS identity is still running, so it is unverifiable, never clean."""
+    proves nothing: a job that changed its OS identity is still running, so it is unverifiable, never clean.
+
+    On Windows the "group" is the job's root process — the trampoline, whose pid is also the job's console process
+    group — and this asks whether THAT process is running. After the command exits the trampoline waits out the
+    drain for the command's leftovers, and the sidecar ends whatever stays, so the root gone means the job is empty
+    — except while the sidecar that holds the job object is still alive (the moment between the root's exit and that
+    sidecar ending the leftovers, or a root killed on its own), and GenericProvider.reconcile_verdict answers
+    `unknown` then. Once that sidecar is gone, kill-on-close has emptied the job."""
+    if WINDOWS:
+        state, current = _win_process(pgid)
+        if state == GROUP_ALIVE and start is not None and current is not None and current != start:
+            return GROUP_GONE
+        return state
     try:
         os.killpg(pgid, 0)
         refused = False
@@ -749,6 +827,12 @@ def group_alive(pgid: int, start) -> bool:
 
 
 def signal_group(pgid: int, signum: int):
+    if WINDOWS:
+        # A console process group takes Ctrl-Break, which Python and most runtimes treat as "stop now". Windows has
+        # no SIGKILL for a group: that is what terminating the job object is (GenericProvider.stop). Without a console
+        # shared with the job this delivers nothing, and the stop's grace then ends in the termination.
+        _kernel32().GenerateConsoleCtrlEvent(_CTRL_BREAK_EVENT, pgid)
+        return
     try:
         os.killpg(pgid, signum)
     except (ProcessLookupError, PermissionError):
@@ -771,6 +855,303 @@ TRAMPOLINE = (
     "    sys.stderr.write('postmq-claim: could not start %s: %s\\n'%(sys.argv[2],e.strerror))\n"
     "    os._exit(127)\n"
 )
+
+# The same on Windows, where exec does not replace the process. The trampoline is created INSIDE the job object, in a
+# console process group of its own (_create_in_job), so nothing it starts can run outside the job — not even the real
+# interpreter a virtual environment's python.exe redirector starts. It waits for the byte,
+# starts the command (found on PATH, no shell), waits for it, then waits up to the drain for whatever the command left
+# in the job to leave — asking about its own job with a NULL handle, which Windows resolves to the caller's immediate
+# job. It never holds a handle to the job: a second handle would keep the job open after the sidecar died and defeat
+# kill-on-close. So the trampoline, the job's ROOT, outlives the command's leftovers for the drain, and the sidecar —
+# the only holder of the job object — ends any that stay (GenericProvider.release_receipt). Its exit status is the
+# command's, all 32 bits (a status such as 0xC0000005 does not fit os._exit's signed int as it stands). It swallows
+# Ctrl-C and Ctrl-Break itself so that status is the command's; the command, in the same group, still receives them.
+# argv[1] is the release pipe's read end, the only handle it inherits beside the standard three.
+TRAMPOLINE_WINDOWS = (
+    "import ctypes,msvcrt,os,shutil,signal,subprocess,sys,time\n"
+    "from ctypes import wintypes\n"
+    "fd=msvcrt.open_osfhandle(int(sys.argv[1]),os.O_RDONLY)\n"
+    "go=os.read(fd,1)\n"
+    "os.close(fd)\n"
+    "if go!=b'x':\n"
+    "    os._exit(125)\n"
+    "k=ctypes.WinDLL('kernel32')\n"
+    "k.QueryInformationJobObject.argtypes=[wintypes.HANDLE,ctypes.c_int,ctypes.c_void_p,wintypes.DWORD,ctypes.c_void_p]\n"
+    "a=(ctypes.c_uint64*6)()\n"
+    "def members():\n"
+    "    return a[5]&0xFFFFFFFF if k.QueryInformationJobObject(None,1,a,48,None) else 0\n"
+    "mine=members()\n"
+    "signal.signal(signal.SIGINT,lambda s,f:None)\n"
+    "signal.signal(signal.SIGBREAK,lambda s,f:None)\n"
+    "try:\n"
+    "    p=subprocess.Popen([shutil.which(sys.argv[2]) or sys.argv[2]]+sys.argv[3:])\n"
+    "except OSError as e:\n"
+    "    sys.stderr.write('postmq-claim: could not start %%s: %%s\\n'%%(sys.argv[2],e.strerror))\n"
+    "    os._exit(127)\n"
+    "s=p.wait()&0xFFFFFFFF\n"
+    "end=time.monotonic()+%d\n"
+    "while members()>mine and time.monotonic()<end:\n"
+    "    time.sleep(0.1)\n"
+    "os._exit(s-(1<<32) if s>=(1<<31) else s)\n"
+) % DRAIN_SECONDS
+
+
+# --------------------------------------------------------------------------------------------------- Windows
+
+_CTRL_BREAK_EVENT = 1
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_SYNCHRONIZE = 0x00100000
+_ERROR_INVALID_PARAMETER = 87
+_WAIT_OBJECT_0 = 0x0
+_WAIT_TIMEOUT = 0x102
+_JOB_OBJECT_BASIC_ACCOUNTING = 1
+_JOB_OBJECT_EXTENDED_LIMIT = 9
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+_EXTENDED_STARTUPINFO_PRESENT = 0x00080000
+_CREATE_UNICODE_ENVIRONMENT = 0x00000400
+_STARTF_USESTDHANDLES = 0x00000100
+_PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
+_PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D
+_KERNEL32 = None
+
+
+def _kernel32():
+    """kernel32 with every argument type declared once: a HANDLE passed as a C int is truncated on 64-bit Windows."""
+    global _KERNEL32
+    if _KERNEL32 is None:
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle, dword, boolean, filetime = wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL, ctypes.POINTER(wintypes.FILETIME)
+        for name, args, result in (
+                ("CreateJobObjectW", [ctypes.c_void_p, wintypes.LPCWSTR], handle),
+                ("SetInformationJobObject", [handle, ctypes.c_int, ctypes.c_void_p, dword], boolean),
+                ("QueryInformationJobObject", [handle, ctypes.c_int, ctypes.c_void_p, dword, ctypes.POINTER(dword)],
+                 boolean),
+                ("TerminateJobObject", [handle, wintypes.UINT], boolean),
+                ("OpenProcess", [dword, boolean, dword], handle),
+                ("GetProcessTimes", [handle, filetime, filetime, filetime, filetime], boolean),
+                ("WaitForSingleObject", [handle, dword], dword),
+                ("CloseHandle", [handle], boolean),
+                ("GenerateConsoleCtrlEvent", [dword, dword], boolean),
+                ("InitializeProcThreadAttributeList", [ctypes.c_void_p, dword, dword, ctypes.POINTER(ctypes.c_size_t)],
+                 boolean),
+                ("UpdateProcThreadAttribute", [ctypes.c_void_p, dword, ctypes.c_size_t, ctypes.c_void_p,
+                                               ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p], boolean),
+                ("DeleteProcThreadAttributeList", [ctypes.c_void_p], None),
+                ("CreateProcessW", [wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, boolean,
+                                    dword, ctypes.c_void_p, wintypes.LPCWSTR, ctypes.c_void_p, ctypes.c_void_p],
+                 boolean),
+                ("GetExitCodeProcess", [handle, ctypes.POINTER(dword)], boolean),
+                ("TerminateProcess", [handle, wintypes.UINT], boolean)):
+            function = getattr(k, name)
+            function.argtypes, function.restype = args, result
+        _KERNEL32 = k
+    return _KERNEL32
+
+
+def _win_process(pid: int):
+    """(state, start token) of `pid`: gone when there is no such process or it has exited, unverifiable when this
+    account may not open it, else alive with its creation time — the token a reused pid never matches."""
+    k = _kernel32()
+    process = k.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION | _SYNCHRONIZE, False, pid)
+    if not process:
+        # Only "no such process" is absence. Anything else — access denied, a kernel short of resources — is a probe
+        # that failed, and a failed probe must never read as clean.
+        return (GROUP_GONE, None) if ctypes.get_last_error() == _ERROR_INVALID_PARAMETER else (GROUP_UNVERIFIABLE, None)
+    try:
+        waited = k.WaitForSingleObject(process, 0)
+        if waited == _WAIT_OBJECT_0:
+            # Signalled: it exited. Its pid stays reserved while anyone holds a handle, so this is not "no such pid".
+            return GROUP_GONE, None
+        if waited != _WAIT_TIMEOUT:
+            return GROUP_UNVERIFIABLE, None
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not k.GetProcessTimes(process, *[ctypes.byref(t) for t in times]):
+            return GROUP_ALIVE, None
+        return GROUP_ALIVE, "win:%d" % ((times[0].dwHighDateTime << 32) | times[0].dwLowDateTime)
+    finally:
+        k.CloseHandle(process)
+
+
+if WINDOWS:  # pragma: no cover - Windows only
+    class _StartupInfo(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR), ("lpDesktop", wintypes.LPWSTR),
+                    ("lpTitle", wintypes.LPWSTR), ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD),
+                    ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD), ("dwXCountChars", wintypes.DWORD),
+                    ("dwYCountChars", wintypes.DWORD), ("dwFillAttribute", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD), ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD),
+                    ("lpReserved2", ctypes.c_void_p), ("hStdInput", wintypes.HANDLE),
+                    ("hStdOutput", wintypes.HANDLE), ("hStdError", wintypes.HANDLE)]
+
+    class _StartupInfoEx(ctypes.Structure):
+        _fields_ = [("StartupInfo", _StartupInfo), ("lpAttributeList", ctypes.c_void_p)]
+
+    class _ProcessInformation(ctypes.Structure):
+        _fields_ = [("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE), ("dwProcessId", wintypes.DWORD),
+                    ("dwThreadId", wintypes.DWORD)]
+
+    class _BasicLimit(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint64) for name in ("ReadOperationCount", "WriteOperationCount",
+                                                         "OtherOperationCount", "ReadTransferCount",
+                                                         "WriteTransferCount", "OtherTransferCount")]
+
+    class _ExtendedLimit(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _BasicLimit), ("IoInfo", _IoCounters),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    class _BasicAccounting(ctypes.Structure):
+        _fields_ = [("TotalUserTime", ctypes.c_int64), ("TotalKernelTime", ctypes.c_int64),
+                    ("ThisPeriodTotalUserTime", ctypes.c_int64), ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+                    ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
+                    ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD)]
+
+
+# Every job object this process holds, by claim, and every claim whose job this process emptied and closed. Process-wide
+# rather than per provider: two GenericProvider instances in one SDK host must see each other's jobs, or a reconcile
+# through one could mistake the other's live job for a closed one.
+_JOBS = {}
+_CLOSED_JOBS = set()
+_JOBS_LOCK = threading.Lock()
+
+
+class _Job:
+    """An unnamed job object with kill-on-close and no breakaway: every process the job starts lands in it, and when
+    the last handle closes — this sidecar exiting, however it exits — Windows terminates them all. Nothing else holds
+    a handle, so its lifetime is exactly this process's."""
+
+    def __init__(self):
+        k = _kernel32()
+        self.handle = k.CreateJobObjectW(None, None)
+        if not self.handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        limits = _ExtendedLimit()
+        limits.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not k.SetInformationJobObject(self.handle, _JOB_OBJECT_EXTENDED_LIMIT, ctypes.byref(limits),
+                                         ctypes.sizeof(limits)):
+            error = ctypes.get_last_error()
+            self.close()
+            raise ctypes.WinError(error)
+
+    def active(self) -> int:
+        """How many processes are in the job right now. A closed job refuses: a NULL handle would make Windows answer
+        for the CALLER's job instead, a silent wrong answer."""
+        if not self.handle:
+            raise OSError("the job object is closed")
+        accounting = _BasicAccounting()
+        if not _kernel32().QueryInformationJobObject(self.handle, _JOB_OBJECT_BASIC_ACCOUNTING,
+                                                     ctypes.byref(accounting), ctypes.sizeof(accounting), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return accounting.ActiveProcesses
+
+    def terminate(self):
+        _kernel32().TerminateJobObject(self.handle, 1)
+
+    def close(self):
+        if self.handle:
+            _kernel32().CloseHandle(self.handle)
+            self.handle = None
+
+
+class _WinChild:
+    """The trampoline, as the provider uses it: the part of Popen it needs, over a process handle it owns."""
+
+    def __init__(self, process, pid):
+        self._handle, self.pid, self.returncode = process, pid, None
+
+    def poll(self):
+        if self.returncode is None and self._handle and _kernel32().WaitForSingleObject(self._handle, 0) == 0:
+            code = wintypes.DWORD()
+            if _kernel32().GetExitCodeProcess(self._handle, ctypes.byref(code)):
+                self.returncode = code.value
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if self.poll() is None and self._handle:
+            _kernel32().WaitForSingleObject(self._handle, 0xFFFFFFFF if timeout is None else int(timeout * 1000))
+        if self.poll() is None:
+            raise subprocess.TimeoutExpired("the job's trampoline", timeout)
+        return self.returncode
+
+    def kill(self):
+        if self._handle:
+            _kernel32().TerminateProcess(self._handle, 1)
+
+    def close(self):
+        if self._handle:
+            self.poll()
+            _kernel32().CloseHandle(self._handle)
+            self._handle = None
+
+
+def _create_in_job(argv, env, job, pipe):
+    """CreateProcessW with the child placed in `job` AT CREATION (PROC_THREAD_ATTRIBUTE_JOB_LIST), in a console process
+    group of its own, inheriting only the release pipe and its three standard handles (PROC_THREAD_ATTRIBUTE_HANDLE_LIST).
+    There is no moment at which the child exists outside the job — no window in which a sidecar that dies leaves it
+    behind — and no instruction of it, or of anything it starts, runs anywhere else. subprocess cannot pass a job list,
+    which is the whole reason this is not Popen."""
+    k = _kernel32()
+    owned, inherited = [], []
+    try:
+        std = []
+        for fd in (0, 1, 2):
+            try:
+                duplicate = os.dup(fd)  # a private copy, so this process's own handle never becomes inheritable
+            except OSError:
+                duplicate = os.open(os.devnull, os.O_RDWR)
+            owned.append(duplicate)
+            handle = msvcrt.get_osfhandle(duplicate)
+            os.set_handle_inheritable(handle, True)
+            std.append(handle)
+        os.set_handle_inheritable(pipe, True)
+        inherited = [pipe] + std
+        handles = (wintypes.HANDLE * len(inherited))(*inherited)
+        size = ctypes.c_size_t(0)
+        k.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
+        attributes = ctypes.create_string_buffer(size.value)
+        if not k.InitializeProcThreadAttributeList(attributes, 2, 0, ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            jobs = (wintypes.HANDLE * 1)(job.handle)
+            if not k.UpdateProcThreadAttribute(attributes, 0, _PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles,
+                                               ctypes.sizeof(handles), None, None) \
+                    or not k.UpdateProcThreadAttribute(attributes, 0, _PROC_THREAD_ATTRIBUTE_JOB_LIST, jobs,
+                                                       ctypes.sizeof(jobs), None, None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            startup = _StartupInfoEx()
+            startup.StartupInfo.cb = ctypes.sizeof(_StartupInfoEx)
+            startup.StartupInfo.dwFlags = _STARTF_USESTDHANDLES
+            startup.StartupInfo.hStdInput, startup.StartupInfo.hStdOutput, startup.StartupInfo.hStdError = std
+            startup.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)
+            flags = _EXTENDED_STARTUPINFO_PRESENT | subprocess.CREATE_NEW_PROCESS_GROUP
+            block = None
+            if env is not None:
+                flags |= _CREATE_UNICODE_ENVIRONMENT
+                text = "".join(f"{key}={value}\0" for key, value in sorted(env.items(), key=lambda kv: kv[0].upper()))
+                block = ctypes.create_unicode_buffer(text + "\0")
+            command = ctypes.create_unicode_buffer(subprocess.list2cmdline(argv))
+            info = _ProcessInformation()
+            if not k.CreateProcessW(None, command, None, None, True, flags, block, None, ctypes.byref(startup),
+                                    ctypes.byref(info)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            k.CloseHandle(info.hThread)
+            return _WinChild(info.hProcess, info.dwProcessId)
+        finally:
+            k.DeleteProcThreadAttributeList(attributes)
+    finally:
+        for handle in inherited:
+            try:
+                os.set_handle_inheritable(handle, False)
+            except OSError:
+                pass
+        for duplicate in owned:
+            os.close(duplicate)
 
 
 # --------------------------------------------------------------------------------------------------- providers
@@ -859,7 +1240,11 @@ class GenericProvider:
     release pipe, then execs the command with no shell). It can see whether that group is gone, and nothing else, so
     every control it offers is advisory and its receipts say `verified_clean` only when the group is gone. Its
     journal_ref is kit 1.0.0's `pgid:<n> <start>`, byte for byte, so an older sidecar on the same host still reads a
-    launch this one recorded."""
+    launch this one recorded.
+
+    On Windows the container is a job object (_Job) holding a trampoline in a console process group of its own; the
+    trampoline's pid is that group's id, so the journal_ref keeps the same shape, with a `win:` start token. While this
+    process runs the job object answers whether anything is left; after it exits, nothing can be."""
 
     def __init__(self, provider_host_key=None, identity_kind="logical", identity_key=None, capabilities=None):
         self.host_key = provider_host_key or host_key()
@@ -879,6 +1264,8 @@ class GenericProvider:
         return {"result": "admitted"}
 
     def container(self, claim_id, fence, argv, env, release_fd):
+        if WINDOWS:
+            return self._container_windows(claim_id, fence, argv, env, release_fd)
         child = subprocess.Popen([sys.executable, "-I", "-c", TRAMPOLINE, str(release_fd)] + list(argv),
                                  pass_fds=(release_fd,), start_new_session=True, env=env)
         start = None
@@ -890,6 +1277,25 @@ class GenericProvider:
         self._children[claim_id] = child
         return {"kind": "pgid", "claim_id": claim_id, "fence": fence, "pgid": child.pid, "start": start or "unknown"}
 
+    def _container_windows(self, claim_id, fence, argv, env, release_fd):
+        """The job object first, then the trampoline, created inside it (_create_in_job). The base interpreter, not a
+        virtual environment's redirector: the trampoline needs only the standard library, and one process fewer in the
+        job is one fewer to reason about."""
+        job = _Job()
+        interpreter = getattr(sys, "_base_executable", None) or sys.executable
+        try:
+            child = _create_in_job([interpreter, "-I", "-c", TRAMPOLINE_WINDOWS, str(msvcrt.get_osfhandle(release_fd))]
+                                   + list(argv), env, job, msvcrt.get_osfhandle(release_fd))
+        except BaseException:
+            job.close()
+            raise
+        self._children[claim_id] = child
+        with _JOBS_LOCK:
+            _JOBS[claim_id] = job
+            _CLOSED_JOBS.discard(claim_id)
+        return {"kind": "pgid", "claim_id": claim_id, "fence": fence, "pgid": child.pid,
+                "start": process_start(child.pid) or "unknown"}
+
     def journal_ref(self, handle):
         return f"pgid:{handle['pgid']} {handle['start']}"
 
@@ -899,6 +1305,8 @@ class GenericProvider:
     def stop(self, handle, grace_seconds):
         """SIGTERM the WHOLE group, wait up to the grace for it to empty — a leader that exits on SIGTERM can leave a
         child that ignores it — then SIGKILL what is left. A grace of 0 kills at once."""
+        if WINDOWS:
+            return self._stop_windows(handle, grace_seconds)
         pgid, start = handle["pgid"], self._start(handle)
         child = self._children.get(handle["claim_id"])
         if grace_seconds > 0:
@@ -909,6 +1317,20 @@ class GenericProvider:
         signal_group(pgid, signal.SIGKILL)
         self._wait_group(child, pgid, start, 10)
 
+    def _stop_windows(self, handle, grace_seconds):
+        """Ctrl-Break to the job's process group, the grace for the job object to empty, then the job object
+        terminated — every process in it however it was started, which is what SIGKILL to the group is on POSIX."""
+        child, job = self._children.get(handle["claim_id"]), _JOBS.get(handle["claim_id"])
+        if job is None:
+            raise RuntimeError("this process created no job object for the claim")
+        if grace_seconds > 0:
+            signal_group(handle["pgid"], signal.SIGBREAK)
+            if self._wait_job(child, job, grace_seconds):
+                return
+            log(f"the job did not stop within {grace_seconds:.0f}s; terminating its job object")
+        job.terminate()
+        self._wait_job(child, job, 10)
+
     def inspect(self, handle_or_ref):
         if isinstance(handle_or_ref, str):
             pgid, start = self._parse_ref(handle_or_ref)
@@ -918,12 +1340,16 @@ class GenericProvider:
         handle = handle_or_ref
         child = self._children.get(handle["claim_id"])
         job_exit, job_signal = _job_end(child) if child is not None else (None, None)
-        return {"state": group_state(handle["pgid"], self._start(handle)), "job_exit": job_exit,
-                "job_signal": job_signal}
+        job = _JOBS.get(handle["claim_id"])
+        state = self._job_state(job) if job is not None else group_state(handle["pgid"], self._start(handle))
+        return {"state": state, "job_exit": job_exit, "job_signal": job_signal}
 
     def release_receipt(self, handle, execution):
         pgid, start = handle["pgid"], self._start(handle)
         child = self._children.get(handle["claim_id"])
+        job = _JOBS.get(handle["claim_id"])
+        if job is not None:
+            return self._release_receipt_windows(handle["claim_id"], child, job)
 
         def alive():
             # Reap our own leader first: an exited child nobody has waited for is a zombie, and a zombie leader keeps
@@ -939,9 +1365,76 @@ class GenericProvider:
             return {"cleanup": "verified_clean"}
         return {"cleanup": "unknown", "detail": "the job's process group still has members after it exited"}
 
+    def _release_receipt_windows(self, claim_id, child, job):
+        """The trampoline has already given the command's leftovers the drain; whatever is still in the job after it
+        this sidecar — the job object's only holder — ends. Either way the handle is then closed: nothing the job
+        started outlives its claim, and a long-lived caller does not collect job objects."""
+        ended = None
+        if not self._wait_job(child, job, DRAIN_SECONDS):
+            try:
+                ended = job.active()
+            except OSError:
+                ended = None
+            job.terminate()
+            self._wait_job(child, job, 10)
+        clean = self._wait_job(child, job, 0)
+        with _JOBS_LOCK:  # one step for a reconcile in this process: the job is either open and readable, or recorded
+            job.close()
+            _JOBS.pop(claim_id, None)
+            if clean:
+                _CLOSED_JOBS.add(claim_id)
+        if child is not None:
+            child.close()
+        if not clean:
+            return {"cleanup": "unknown", "detail": "the job object still held processes after it was terminated"}
+        if ended is not None:
+            return {"cleanup": "verified_clean",
+                    "detail": f"the job object ended {ended} process(es) still in it after the job exited"}
+        return {"cleanup": "verified_clean"}
+
     def reconcile_verdict(self, entries, claim_id, fence):
         outcome, detail = journal_verdict(entries, claim_id, fence)
+        if WINDOWS and outcome == "verified_clean":
+            outcome, detail = self._windows_launcher_check(entries, claim_id, fence, outcome, detail)
         return outcome, detail, None
+
+    def _windows_launcher_check(self, entries, claim_id, fence, outcome, detail):
+        """A reconcile that finds the job's root gone may still be looking at a job whose launching sidecar is alive and
+        holding its job object — the one window in which the root could be gone and the job not empty (the root was
+        killed on its own, or is mid-termination). So while that sidecar runs, "gone" is only `unknown`; once it is
+        gone, kill-on-close has emptied the job and the root's absence is the whole answer."""
+        launched = next((e for e in entries if e.kind == "launched" and e.claim == claim_id and e.fence == fence), None)
+        if launched is None or launched.group is None:
+            return outcome, detail
+        with _JOBS_LOCK:  # read the job and its closure together, never a handle the release is closing
+            job = _JOBS.get(claim_id)
+            state = self._job_state(job) if job is not None else None
+            closed = claim_id in _CLOSED_JOBS
+        if job is not None:  # launched by this process, which can simply look
+            if state == GROUP_ALIVE:
+                return "cleanup_failed", "the job's job object still holds processes"
+            if state == GROUP_UNVERIFIABLE:
+                return "unknown", "the job's job object could not be read"
+            return outcome, detail
+        intent = next((e for e in entries if e.kind == "intent" and e.claim == claim_id and e.fence == fence), None)
+        if intent is None:
+            return outcome, detail
+        state, launcher_start = _win_process(intent.pid)
+        if state == GROUP_GONE:
+            return outcome, detail
+        root_start = launched.start or ""
+        if state == GROUP_ALIVE and (launcher_start or "").startswith("win:") and root_start.startswith("win:") \
+                and int(launcher_start[4:]) > int(root_start[4:]):
+            # That pid now names a process started after the job — a restarted serve may even be this one — so it
+            # is not the launcher, which is gone, and kill-on-close has emptied its job.
+            return outcome, detail
+        if intent.pid == os.getpid():
+            # Launched from this process: clean only on evidence that this process emptied and closed its job.
+            if closed:
+                return outcome, detail
+            return "unknown", "this process launched the job and holds no record of having emptied its job object"
+        return "unknown", ("the job's root is gone but the sidecar that launched it is still running, and only it "
+                           "can see whether its job object is empty")
 
     def telemetry(self):
         return {"host": socket.gethostname()}, "healthy"
@@ -958,6 +1451,23 @@ class GenericProvider:
         if len(parts) != 2 or not parts[0].startswith("pgid:") or not parts[0][5:].isdigit():
             return None, None
         return int(parts[0][5:]), (None if parts[1] == "unknown" else parts[1])
+
+    @staticmethod
+    def _job_state(job) -> str:
+        try:
+            return GROUP_GONE if job.active() == 0 else GROUP_ALIVE
+        except OSError:
+            return GROUP_UNVERIFIABLE
+
+    @staticmethod
+    def _wait_job(child, job, seconds) -> bool:
+        """Wait up to `seconds` for the trampoline to exit AND the job object to empty; True when both happened."""
+        deadline = time.monotonic() + seconds
+        while True:
+            done = (child is None or child.poll() is not None) and GenericProvider._job_state(job) == GROUP_GONE
+            if done or time.monotonic() >= deadline:
+                return done
+            time.sleep(0.1)
 
     @staticmethod
     def _wait_group(child, pgid, start, seconds) -> bool:
@@ -1056,7 +1566,7 @@ class Holder:
                 except Exception:  # noqa: BLE001 — a signal handler must never raise
                     pass
 
-        for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+        for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
             if hasattr(signal, name):
                 signal.signal(getattr(signal, name), handler)
 
@@ -1913,7 +2423,7 @@ def cmd_serve(args) -> int:
         log(f"received {signal.Signals(signum).name}; stopping")
         stopping.set()
 
-    for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+    for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), handler)
     serve(_provider_from(args), registration, interval=args.interval or SERVE_INTERVAL_SECONDS,
@@ -1939,11 +2449,20 @@ def cmd_status(args) -> int:
     return 0
 
 
+def _exit_status(code):
+    """A Windows status is 32 bits unsigned (0xC0000005 is 3221225477) and sys.exit takes a C long, which is 32 bits
+    signed there, so a status at or above 2**31 is handed over as the same bits, negative."""
+    if WINDOWS and isinstance(code, int) and code >= 1 << 31:
+        return code - (1 << 32)
+    return code
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="postmq-claim", description="Hold a PostMQ resource claim around one job.")
     parser.add_argument("--version", action="version", version="postmq-claim " + VERSION)
     sub = parser.add_subparsers(dest="mode", required=True)
-    provider_help = "a provider as path/to/file.py:factory (default: the generic POSIX process-group provider)"
+    provider_help = ("a provider as path/to/file.py:factory (default: the generic provider — a POSIX process group, "
+                     "or a job object on Windows)")
 
     p = sub.add_parser("run", help="claim, wait, launch the command under the host gate, release with a receipt")
     p.add_argument("--resource", required=True, help="the resource id")
@@ -1970,7 +2489,7 @@ def main(argv=None) -> int:
     p.add_argument("--budget-scale", type=float, help=argparse.SUPPRESS)
 
     p = sub.add_parser("serve", help="register the resource, then report its health and reconcile it, until stopped")
-    p.add_argument("--kind", required=True, help="the resource's kind, e.g. gpu_host or unit_gate")
+    p.add_argument("--kind", required=True, help="the resource's kind, e.g. gpu, host or unit-gate")
     p.add_argument("--display-name", required=True)
     p.add_argument("--project", help="the project id to register it under")
     p.add_argument("--identity-kind", help="override the provider's identity kind")
@@ -1996,14 +2515,15 @@ def main(argv=None) -> int:
         for name in ("BUDGET_DECLARE", "BUDGET_TELEMETRY", "BUDGET_PREFLIGHT", "BUDGET_CONTAINER", "BUDGET_STOP_EXTRA",
                      "BUDGET_INSPECT", "BUDGET_RELEASE_RECEIPT", "BUDGET_RECONCILE_VERDICT"):
             globals()[name] = globals()[name] * scale
-    if fcntl is None or not hasattr(os, "setsid"):
-        log("the sidecar needs POSIX (flock and sessions); it does not run on Windows yet")
+    if not WINDOWS and (fcntl is None or not hasattr(os, "setsid")):
+        log("the sidecar needs flock(2) and POSIX sessions, or Windows job objects; this platform has neither")
         return EXIT_CONFIG
     if args.mode != "serve" and not ULID.match(getattr(args, "resource", "") or ""):
         log("--resource is not a PostMQ id (26 characters, Crockford base32)")
         return EXIT_CONFIG
     try:
-        return {"run": cmd_run, "reconcile": cmd_reconcile, "serve": cmd_serve, "status": cmd_status}[args.mode](args)
+        return _exit_status({"run": cmd_run, "reconcile": cmd_reconcile, "serve": cmd_serve,
+                             "status": cmd_status}[args.mode](args))
     except Fatal as error:
         log(str(error))
         return EXIT_CONFIG
