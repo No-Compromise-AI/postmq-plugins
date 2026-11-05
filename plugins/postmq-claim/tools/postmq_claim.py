@@ -9,10 +9,14 @@ gate and journal, keeps the claim alive while the job runs, releases it with a r
 registers the resource and reports its health. What the job runs IN, and what the host can honestly say about it
 afterwards, is a PROVIDER's — an object this module drives and never sees inside.
 
-    postmq-claim.py run --resource <resource_id> [--ttl S] [--wait S] [--provider F:fn] -- <command> [args…]
+    postmq-claim.py run --resource <resource_id> [--ttl S] [--wait S] [--provider F:fn]
+                        [--mode exclusive|shared] [--quantity N] [--yield-policy P] [--on-yield CMD]
+                        [--expected-seconds S] [--resumes <claim_id>] [--purpose job|maintenance]
+                        [--drain S [--drain-reason TEXT]] -- <command> [args…]
     postmq-claim.py reconcile --resource <resource_id> [--claim <claim_id>] [--provider F:fn]
     postmq-claim.py serve --kind K --display-name N --provider F:fn [--interval S]
-    postmq-claim.py status --resource <resource_id>
+                          [--mode shared --quantity N] [--parent <resource_id>] [--identity-crosscheck X]
+    postmq-claim.py status --resource <resource_id> [--claim <claim_id>]
 
 `postmq-claim.py` is the command line; this file is the library it imports, installed beside it. A provider is any
 object with the nine methods below, built by a no-argument factory named on the command line as
@@ -24,7 +28,9 @@ THE PROVIDER PROTOCOL (the interface fixed with the GB10 adapter on MovieStudio 
 The SDK owns the gate, the journal, the claim, the wait, the renewals, the admission sequence, the release pipe and
 EVERY call to PostMQ; a provider never calls PostMQ.
     declare()                                  → {receipt_provider, enforcement, capabilities, identity_kind,
-                                                  identity_key, provider_host_key}
+                                                  identity_key, provider_host_key} and, optionally (kit 1.4, §18.5),
+                                                  identity_crosscheck: a chassis serial, a bus address or a hypervisor
+                                                  that `serve` registers beside the identity
     preflight(claim)                           → {"result": "admitted"} or {"result": "refused", "reason",
                                                   "cleanup", "health"?}
     container(claim_id, fence, argv, env, release_fd)
@@ -48,13 +54,24 @@ EVERY call to PostMQ; a provider never calls PostMQ.
     telemetry()                                → (telemetry_dict, health)
 and, optionally, forward_signal(handle, signum): a provider whose job can take a terminal's signal (the generic one)
 receives Ctrl-C/SIGTERM/SIGHUP at once, and the SDK then waits STOP_GRACE_SECONDS for the job before stop(handle, 0).
+And, optionally (kit 1.4, the silicon receipt of design §17.7):
+    observe_execution(handle, claim)           → (observed: bool, device_key: str | None) — True only when the
+                                                  provider has SEEN the job's work on the granted device (a CUDA
+                                                  context on that GPU, say), never because the job was started.
+                                                  Asked once the job runs, again every second while it answers
+                                                  False, until the observation window closes or the job ends.
+The SDK reports `running` (POST /v1/claims/{id}/execution) only on a positive observation, and only then — once the
+job ends and before the release — `completed`, `failed` or `aborted`. A provider without the method observes nothing
+and reports nothing. THE GENERIC PROVIDER HAS NO observe_execution: a process group says nothing about which device a
+job touched, so on a resource that declares `device_binding: enforced` its claims stay `execution: pending`.
 
 EVERY PROVIDER CALL HAS A HARD WALL-CLOCK BUDGET (D-RC-14). When one runs out the SDK stops waiting, never calls that
 method again for the claim, ignores a late return, and takes the fallback — the same one a provider that RAISES gets:
     declare 10 s (exit 3) · telemetry 10 s (health unknown) · preflight 30 s (refused, pristine) · container 30 s (the
     release fd closed unwritten; released aborted/unknown) · journal_ref 20 s (the same) · stop grace + 30 s
     (released aborted/unknown; a reconcile reads the container later) · inspect 20 s (unverifiable) ·
-    release_receipt 30 s (unknown) · reconcile_verdict 30 s (unknown).
+    release_receipt 30 s (unknown) · reconcile_verdict 30 s (unknown) · observe_execution 60 s in all (nothing is
+    reported).
 
 THE CLAIM ROW IS THE AUTHORITY, NEVER A NOTICE. A grant also arrives in the agent's inbox as a `resource_notice`, and
 this script listens for that wake (GET /v1/messages/events, the same stream postmq-wake.py holds) — but it never acts
@@ -83,6 +100,45 @@ fenced off — it stops the job as the resource's declared `revocation` says, wa
 the evidence still counts, the claim does not come back. A Ctrl-C or SIGTERM is forwarded to the job, which is then
 released. While still QUEUED, an exit cancels the claim, so a sidecar that dies waiting leaves no grant nobody admits.
 
+YIELD AND DRAIN REQUESTS (kit 1.4, design §17.5). Every claim declares how it yields (`--yield-policy`; absent, the
+server's default `finish`). While the job runs, every re-read of the claim — on a wake, and, under a policy that can
+yield, every 30 seconds as well — looks at the claim's `yield_requests` (a claim queued behind a `yield` holder) and
+`drain_requests` (an incumbent or maintainer asking the holders in its way to step aside by a deadline). Each NEW entry
+is answered by the policy this claim declared and nothing else — once, unless its hook is stopped before it answers:
+    finish, none      logged; the job runs to its own end. Nothing is ever stopped.
+    yield, cancel     without --on-yield the job is stopped (its grace, kept inside a drain's deadline) and released
+                      with `execution: aborted`, exit 7. With --on-yield the hook decides: exit 0 stops and releases;
+                      any other status leaves the job running.
+    checkpoint        only a hook can checkpoint the job, so --on-yield is required, and it decides as above.
+The hook gets the request as JSON on stdin and POSTMQ_CLAIM_ID, POSTMQ_CLAIM_FENCE, POSTMQ_RESOURCE_ID,
+POSTMQ_YIELD_KIND (drain|yield), POSTMQ_YIELD_POLICY, POSTMQ_YIELD_REQUESTER (the requester's friendly name),
+POSTMQ_HOOK_SECONDS (the most it may run before it is stopped), and for a drain POSTMQ_DRAIN_DEADLINE and
+POSTMQ_DRAIN_SECONDS_LEFT (from the server's clock). One hook runs at a time, earliest deadline first: drains by their
+deadlines, then yield requests, which have none, in the order they were seen. A yield request's hook may run 300 s. A
+drain's must answer early enough for the stop that follows to keep its grace inside the deadline — the deadline less
+DRAIN_RELEASE_MARGIN, YIELD_MIN_GRACE_SECONDS and YIELD_STOP_SECONDS, 8 s in all — so POSTMQ_HOOK_SECONDS falls about
+that far short of POSTMQ_DRAIN_SECONDS_LEFT, EXCEPT for a drain already inside that margin: one with less than about 9 s
+left when its hook starts still gets HOOK_MIN_SECONDS (1 s), which may run to the deadline or past it, so the stop after
+its exit 0 cannot end inside the deadline, and with under 2 s left POSTMQ_HOOK_SECONDS is not shorter at all. A request
+more urgent than the one whose hook is running stops that hook no later than halfway from the moment it was seen to the
+moment its own hook must answer, so its hook keeps at least half its window — or at once, for a drain already inside its
+margin, whose hook then gets that 1 s floor; a drain with 1 s or less left stops no hook, because its own could not
+answer before its deadline and the stopped hook would start again from nothing. The stopped request did not answer, so
+it is asked again afterwards if the job still runs and a fresh read of the claim still lists it (the latest read, when
+that one fails or takes more than FRESH_READ_SECONDS, 3 s), with its whole budget again: a hook can be asked about one
+request more than once and must be safe to repeat (a checkpoint may be taken twice), and drain after drain, each more
+urgent than it, can put a yield request off — and restart its hook — every time. Two drains with the same deadline are
+asked in the order seen and the second never stops the first, so when the first's hook spends its whole window and
+declines, the second's gets only the 1 s floor; in general a drain whose hook starts after another's gets what is left
+of its own window, and at least that. No hook is asked about a request the claim's latest read no longer lists, and a
+hook's exit 0 stops nothing when the latest read stopped listing its request while it ran. A read the server answered
+before one already applied is not applied. The claim lists at most 16 requests of each kind, taken from the first 64
+queued claims, so where a list may have been cut — 16 entries, or yield requests with a queue_depth of 64 or more — a
+request it leaves out is not taken as withdrawn: it keeps the standing the read before gave it (a drain only until its
+deadline), and a hook can be asked about one withdrawn while the list stayed full. A hook still running at its budget is
+stopped whole: its process group on POSIX, a job object of its own on Windows. A notice is a wake, never the authority:
+the sidecar acts only on what get_claim says, and nobody else's job is ever touched.
+
 THE GENERIC PROVIDER. With no native receipt provider, receipts say `provider: generic` and report only what this
 process can see: `verified_clean` when the job's process group is gone, `unknown` otherwise. They make a resource
 available again only where the resource declared `receipt_provider: generic` — a `logical` resource such as a unit-
@@ -109,6 +165,7 @@ EXIT STATUS
     3  configuration       4  never granted (denied, timed out, withdrawn, cancelled)
     5  granted but not launched (the launch sequence stopped before exec)
     6  the claim was lost while the job ran (the job was stopped and released late)
+    7  the job was stopped to yield the resource, as its declared yield policy allows, and released (kit 1.4)
     130/143  interrupted (SIGINT/SIGTERM) — cancelled while queued, or the job stopped and released;
              on Windows 130/149 (Ctrl-C/Ctrl-Break)
 
@@ -133,6 +190,7 @@ import queue
 import random
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import socket
@@ -159,7 +217,7 @@ if WINDOWS:  # pragma: no cover - exercised natively on Windows (tools/tests/pos
     import winreg
     from ctypes import wintypes
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 DEFAULT_API_URL = "https://api.postmq.com"
 PROVIDER = "generic"
 ADVISORY = {"ownership": "advisory", "descendant_supervision": "advisory", "memory_accounting": "advisory",
@@ -189,14 +247,45 @@ BUDGET_STOP_EXTRA = 30.0
 BUDGET_INSPECT = 20.0
 BUDGET_RELEASE_RECEIPT = 30.0
 BUDGET_RECONCILE_VERDICT = 30.0
+BUDGET_OBSERVE = 60.0           # observe_execution: the whole observation window, every call inside it
+OBSERVE_POLL_SECONDS = 1.0      # how often a provider that has not yet seen the job is asked again
+
+# --on-yield. A drain's hook must have answered by its deadline less DRAIN_RELEASE_MARGIN, YIELD_MIN_GRACE_SECONDS and
+# YIELD_STOP_SECONDS: an exit 0 at that instant still leaves the stop its least grace, ending the margin before the
+# deadline, with the kill, the receipt and the release inside the margin. A drain already inside that margin (under
+# about 9 s left) cannot have that: its hook gets HOOK_MIN_SECONDS, and the stop after it may end past the deadline.
+HOOK_BUDGET_SECONDS = 300.0     # a yield request's hook (it has no deadline)
+HOOK_MIN_SECONDS = 1.0          # the least any hook is given; a drain with no more than this left stops no other hook
+HOOK_POLL_SECONDS = 0.1         # how often a running hook is checked: its exit, a more urgent request, the claim's end
+FRESH_READ_SECONDS = 3.0        # the most the hook runner waits for its re-read before it asks a stopped request again
+DRAIN_RELEASE_MARGIN = 5.0      # a yield stop under a drain ends its grace this far inside the deadline
+YIELD_MIN_GRACE_SECONDS = 1.0   # the least grace a yield stop gives its job, however near the drain's deadline
+YIELD_STOP_SECONDS = 2.0        # from a hook's exit 0 to the stop's first signal: the runner, supervise's poll, inspect
 
 EXIT_CONFIG = 3
 EXIT_NOT_GRANTED = 4
 EXIT_NOT_LAUNCHED = 5
 EXIT_LOST = 6
+EXIT_YIELDED = 7
 
 ULID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 LIVE_STATES = ("queued", "granted", "admitted")
+
+# Rev 12's claim request members (design §17.2, §17.5, §17.6, §18.3; Appendix A as amended by §17.8). Each is sent only
+# when the caller names it, so a kit 1.3 invocation sends a kit 1.3 body: A.2 refuses any request field it does not list.
+CLAIM_MODES = ("exclusive", "shared")
+YIELD_POLICIES = ("finish", "checkpoint", "yield", "cancel", "none")
+YIELDING_POLICIES = ("yield", "cancel", "checkpoint")   # the only policies under which the sidecar may stop its job
+PURPOSES = ("job", "maintenance")
+MAX_QUANTITY = 1000000
+MAX_EXPECTED_SECONDS = 604800
+MIN_DRAIN_SECONDS, MAX_DRAIN_SECONDS = 30, 86400
+MAX_REQUESTS = 16               # yield_requests and drain_requests carry at most 16 entries each (§17.8)
+# The server derives both lists from the first REQUEST_WINDOW queued claims in grant order, drains first
+# (ResourceProjector.RequestsAsync, `TOP (64)`), then keeps MAX_REQUESTS of each. So a list holding MAX_REQUESTS entries
+# may have left a standing request out, and so may yield_requests whenever queue_depth reaches the window. Drains come
+# first, so the window can only cut drain_requests where the drains already fill MAX_REQUESTS.
+REQUEST_WINDOW = 64
 
 
 class Fatal(Exception):
@@ -395,6 +484,166 @@ def _retry_after(value):
     except (TypeError, ValueError):
         return None
     return seconds if math.isfinite(seconds) and seconds >= 0 else None
+
+
+def printable(value, limit=200) -> str:
+    """Another account's words — a friendly name, a display name, a drain's reason, a window's label — as one printable
+    line: line breaks, control characters and escape sequences become `?`, so a name can never forge a diagnostic line
+    or drive the terminal it is printed to."""
+    if value is None:
+        return ""
+    text = "".join(ch if ch.isprintable() else "?" for ch in str(value))
+    return text[:limit]
+
+
+def describe_holder(entry) -> str:
+    """One `blocking` entry (§17.8) or `holders` entry (§17.8, resource object) as `name (state, …)`. Never a claim id:
+    the server sends none, and a name is what a reader can act on."""
+    holder = entry.get("holder") if isinstance(entry.get("holder"), dict) else {}
+    name = printable(entry.get("holder_friendly_name") or holder.get("friendly_name") or "a holder", 128)
+    facts = [printable(entry[k], 32) for k in ("state", "occupancy") if isinstance(entry.get(k), str)]
+    if isinstance(entry.get("mode"), str) and isinstance(entry.get("quantity"), int):
+        facts.append(f"{printable(entry['mode'], 16)} x{entry['quantity']}")
+    if isinstance(entry.get("yield_policy"), str):
+        facts.append(f"yield_policy {printable(entry['yield_policy'], 16)}")
+    if isinstance(entry.get("expires_at"), str):
+        facts.append(f"until {printable(entry['expires_at'], 40)}")
+    return name + (f" ({', '.join(facts)})" if facts else "")
+
+
+# Codes a claim that waits can outlast (§6.5, §17.6, §18.4): a refusal with one of them earns the --wait hint.
+WAITABLE_CODES = ("held_by_peer", "policy", "protected_window", "in_maintenance", "blocked_by_parent", "unreachable",
+                  "temporarily_offline_job_state_unknown")
+
+
+def describe_reason(reason) -> str:
+    """A `reason` (§6.5, as §17.8 and §18.8 widen it) as one line in the server's own terms: the code, then what it
+    carries that says why — the protected window, who is in the way and under what yield policy, the ancestor the state
+    was inherited from (`via`), the lending rule, the adapter's detail."""
+    if not isinstance(reason, dict):
+        return "no reason given"
+    parts = [printable(reason.get("code") or "unknown", 64)]
+    window = reason.get("window")
+    if isinstance(window, dict):
+        parts.append(f"protected window '{printable(window.get('label'), 64)}' from "
+                     f"{printable(window.get('starts_at'), 40)} to {printable(window.get('ends_at'), 40)}")
+    via = reason.get("via")
+    if isinstance(via, dict):
+        parts.append(f"via {printable(via.get('display_name'), 128)} ({printable(via.get('resource_id'), 26)})")
+    if reason.get("holder_friendly_name"):
+        held = f"held by {printable(reason['holder_friendly_name'], 128)}"
+        if reason.get("held_since"):
+            held += f" since {printable(reason['held_since'], 40)}"
+        if reason.get("expires_at"):
+            held += f", until {printable(reason['expires_at'], 40)}"
+        parts.append(held)
+    blocking = reason.get("blocking")
+    if isinstance(blocking, list) and blocking:
+        parts.append("in the way: " + "; ".join(describe_holder(b) for b in blocking[:MAX_REQUESTS]
+                                                 if isinstance(b, dict)))
+    if reason.get("reachability_observed_at"):
+        parts.append(f"reported unreachable at {printable(reason['reachability_observed_at'], 40)}")
+    if reason.get("lending_rule"):
+        parts.append(f"lending rule: {printable(reason['lending_rule'], 200)}")
+    if isinstance(reason.get("position"), int) and not isinstance(reason.get("position"), bool):
+        parts.append(f"you would be at position {reason['position']}")
+    if reason.get("detail"):
+        parts.append(f"detail: {printable(reason['detail'], 300)}")
+    return " — ".join(parts)
+
+
+def _whole(value) -> bool:
+    return type(value) is int  # noqa: E721 — a bool is an int to isinstance, and True is not a quantity
+
+
+def hook_command(spec):
+    """--on-yield as something to start WITHOUT a shell: an argv list on POSIX (split like a shell would, nothing
+    expanded), the command line itself on Windows, where a process receives one string and parses it. Its program must
+    resolve now, before anything is claimed — a hook that cannot start is a promise the sidecar cannot keep."""
+    if not isinstance(spec, str) or not spec.strip():
+        raise Fatal("--on-yield needs a command")
+    try:
+        parts = shlex.split(spec, posix=not WINDOWS)
+    except ValueError:
+        raise Fatal("--on-yield could not be split into a command and its arguments (an unmatched quote?)") from None
+    if not parts:
+        raise Fatal("--on-yield needs a command")
+    program = parts[0].strip('"') if WINDOWS else parts[0]
+    if shutil.which(program) is None and not os.path.isfile(program):
+        raise Fatal(f"--on-yield: {program!r} was not found on PATH; nothing was claimed")
+    return spec if WINDOWS else parts
+
+
+def claim_members(mode=None, quantity=None, yield_policy=None, expected_seconds=None, resumes=None, purpose=None,
+                  drain=None, drain_reason=None, on_yield=None):
+    """Rev 12's claim request members as `claim` will send them, checked before anything is sent: `(mode, members)`,
+    where `mode` is what the body's `mode` says (1.3 always sent `exclusive`) and `members` holds only what the caller
+    named, in a fixed order. A misused flag is a Fatal (exit 3) with nothing claimed. The server stays the authority
+    on everything that needs the resource — whether it takes shared claims, whether the quantity fits, whether this
+    account holds the role a drain or a maintenance claim needs."""
+    if mode is not None and mode not in CLAIM_MODES:
+        raise Fatal("--mode is exclusive or shared")
+    members = {}
+    if quantity is not None:
+        if mode != "shared":
+            raise Fatal("--quantity is for --mode shared: an exclusive claim takes all of the resource")
+        if not _whole(quantity) or not 1 <= quantity <= MAX_QUANTITY:
+            raise Fatal(f"--quantity is a whole number from 1 to {MAX_QUANTITY}")
+        members["quantity"] = quantity
+    if yield_policy is not None:
+        if yield_policy not in YIELD_POLICIES:
+            raise Fatal("--yield-policy is finish, checkpoint, yield, cancel or none")
+        members["yield_policy"] = yield_policy
+    if expected_seconds is not None:
+        if not _whole(expected_seconds) or not 1 <= expected_seconds <= MAX_EXPECTED_SECONDS:
+            raise Fatal(f"--expected-seconds is a whole number from 1 to {MAX_EXPECTED_SECONDS}")
+        members["expected_seconds"] = expected_seconds
+    if resumes is not None:
+        if not isinstance(resumes, str) or not ULID.match(resumes):
+            raise Fatal("--resumes is a PostMQ claim id (26 characters, Crockford base32)")
+        members["resumes_claim_id"] = resumes
+    if purpose is not None:
+        if purpose not in PURPOSES:
+            raise Fatal("--purpose is job or maintenance")
+        members["purpose"] = purpose
+    if drain_reason is not None and drain is None:
+        raise Fatal("--drain-reason goes with --drain")
+    if drain is not None:
+        if not _whole(drain) or not MIN_DRAIN_SECONDS <= drain <= MAX_DRAIN_SECONDS:
+            raise Fatal(f"--drain is a deadline in whole seconds, {MIN_DRAIN_SECONDS} to {MAX_DRAIN_SECONDS}")
+        terms = {"deadline_seconds": drain}
+        if drain_reason is not None:
+            if not isinstance(drain_reason, str) or not drain_reason or len(drain_reason) > MAX_TEXT:
+                raise Fatal(f"--drain-reason is 1 to {MAX_TEXT} characters")
+            terms["reason"] = drain_reason
+        members["drain"] = terms
+    if on_yield is not None:
+        if yield_policy not in YIELDING_POLICIES:
+            raise Fatal("--on-yield runs only under --yield-policy yield, cancel or checkpoint: under finish or none "
+                        "(the server's default is finish) this claim never yields, so the hook would never run")
+        hook_command(on_yield)
+    elif yield_policy == "checkpoint":
+        raise Fatal("--yield-policy checkpoint needs --on-yield: only your hook can checkpoint the job, and the "
+                    "sidecar never stops a job whose holder promised to checkpoint it")
+    return mode or "exclusive", members
+
+
+def observation(answer):
+    """(observed, device_key) from observe_execution's answer — a 2-tuple, or `{observed, device_key}`. Only the
+    literal True is an observation: 1, "yes" or a non-empty list is a provider bug, never a claim that silicon was seen.
+    A device key the coordinator would refuse (§21.14A: 1 to 512 characters) is dropped rather than sent; the report
+    then counts only where the resource does not need one."""
+    if isinstance(answer, dict):
+        observed, key = answer.get("observed"), answer.get("device_key")
+    elif isinstance(answer, (tuple, list)) and len(answer) == 2:
+        observed, key = answer
+    else:
+        return False, None
+    if observed is not True:
+        return False, None
+    if not (isinstance(key, str) and 1 <= len(key) <= 512 and key.isprintable()):
+        key = None
+    return True, key
 
 
 # --------------------------------------------------------------------------------------------------- the API
@@ -1024,13 +1273,19 @@ _JOBS_LOCK = threading.Lock()
 class _Job:
     """An unnamed job object with kill-on-close and no breakaway: every process the job starts lands in it, and when
     the last handle closes — this sidecar exiting, however it exits — Windows terminates them all. Nothing else holds
-    a handle, so its lifetime is exactly this process's."""
+    a handle, so its lifetime is exactly this process's.
 
-    def __init__(self):
+    `kill_on_close=False` is the --on-yield hook's job (kit 1.4): still no breakaway, so terminate() ends every process
+    the hook started, but closing it ends nothing — a hook that answered and exited keeps what it chose to leave
+    running, as its process group does on POSIX."""
+
+    def __init__(self, kill_on_close=True):
         k = _kernel32()
         self.handle = k.CreateJobObjectW(None, None)
         if not self.handle:
             raise ctypes.WinError(ctypes.get_last_error())
+        if not kill_on_close:
+            return
         limits = _ExtendedLimit()
         limits.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         if not k.SetInformationJobObject(self.handle, _JOB_OBJECT_EXTENDED_LIMIT, ctypes.byref(limits),
@@ -1090,17 +1345,21 @@ class _WinChild:
             self._handle = None
 
 
-def _create_in_job(argv, env, job, pipe):
+def _create_in_job(argv, env, job, pipe, std_fds=(0, 1, 2)):
     """CreateProcessW with the child placed in `job` AT CREATION (PROC_THREAD_ATTRIBUTE_JOB_LIST), in a console process
     group of its own, inheriting only the release pipe and its three standard handles (PROC_THREAD_ATTRIBUTE_HANDLE_LIST).
     There is no moment at which the child exists outside the job — no window in which a sidecar that dies leaves it
     behind — and no instruction of it, or of anything it starts, runs anywhere else. subprocess cannot pass a job list,
-    which is the whole reason this is not Popen."""
+    which is the whole reason this is not Popen.
+
+    The --on-yield hook (kit 1.4) is started the same way with no release pipe (`pipe` None), its standard handles
+    taken from `std_fds` (the read end of the request's pipe, then this sidecar's stderr twice), and `argv` the command
+    line itself, a string, which is what a Windows process receives."""
     k = _kernel32()
     owned, inherited = [], []
     try:
         std = []
-        for fd in (0, 1, 2):
+        for fd in std_fds:
             try:
                 duplicate = os.dup(fd)  # a private copy, so this process's own handle never becomes inheritable
             except OSError:
@@ -1109,8 +1368,9 @@ def _create_in_job(argv, env, job, pipe):
             handle = msvcrt.get_osfhandle(duplicate)
             os.set_handle_inheritable(handle, True)
             std.append(handle)
-        os.set_handle_inheritable(pipe, True)
-        inherited = [pipe] + std
+        if pipe is not None:
+            os.set_handle_inheritable(pipe, True)
+        inherited = ([] if pipe is None else [pipe]) + std
         handles = (wintypes.HANDLE * len(inherited))(*inherited)
         size = ctypes.c_size_t(0)
         k.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
@@ -1135,7 +1395,7 @@ def _create_in_job(argv, env, job, pipe):
                 flags |= _CREATE_UNICODE_ENVIRONMENT
                 text = "".join(f"{key}={value}\0" for key, value in sorted(env.items(), key=lambda kv: kv[0].upper()))
                 block = ctypes.create_unicode_buffer(text + "\0")
-            command = ctypes.create_unicode_buffer(subprocess.list2cmdline(argv))
+            command = ctypes.create_unicode_buffer(argv if isinstance(argv, str) else subprocess.list2cmdline(argv))
             info = _ProcessInformation()
             if not k.CreateProcessW(None, command, None, None, True, flags, block, None, ctypes.byref(startup),
                                     ctypes.byref(info)):
@@ -1152,6 +1412,110 @@ def _create_in_job(argv, env, job, pipe):
                 pass
         for duplicate in owned:
             os.close(duplicate)
+
+
+class _HookProcess:
+    """One running --on-yield hook (kit 1.4), started without a shell and stopped WHOLE: on POSIX a session of its own,
+    killed by process group; on Windows a job object of its own (no breakaway, no kill-on-close), terminated — which
+    ends every process the hook started, however it started it, where killing the hook's own process would leave its
+    children running. A hook that answers and exits keeps whatever it deliberately left running on both. The request
+    goes in on stdin from a thread of its own, so a hook that never reads it cannot hold up the budget."""
+
+    def __init__(self, command, env, payload: bytes, out):
+        self.job = self.proc = None
+        self.closed = False
+        if WINDOWS:
+            self._start_windows(command, env, payload, out)
+            return
+        self.proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=out, env=env, start_new_session=True)
+        threading.Thread(target=self._feed, args=(self.proc.stdin.write, self.proc.stdin.close, payload),
+                         name="hook-stdin", daemon=True).start()
+
+    def _start_windows(self, command, env, payload, out):
+        job = _Job(kill_on_close=False)
+        devnull = None
+        if not (isinstance(out, int) and out >= 0):
+            devnull = out = os.open(os.devnull, os.O_RDWR)
+        read_fd, write_fd = os.pipe()
+        try:
+            self.proc = _create_in_job(command, env, job, None, std_fds=(read_fd, out, out))
+        except BaseException:
+            os.close(write_fd)
+            job.close()
+            raise
+        finally:
+            os.close(read_fd)
+            if devnull is not None:
+                os.close(devnull)
+        self.job = job
+        threading.Thread(target=self._feed, args=(lambda data: os.write(write_fd, data), lambda: os.close(write_fd),
+                                                  payload), name="hook-stdin", daemon=True).start()
+
+    @staticmethod
+    def _feed(write, close, payload):
+        try:
+            write(payload)
+        except (OSError, ValueError):  # the hook exited, or closed its stdin, without reading the request
+            pass
+        finally:
+            try:
+                close()
+            except (OSError, ValueError):
+                pass
+
+    def poll(self):
+        return self.proc.poll()
+
+    def kill(self):
+        """Stop the hook and everything it started, if the hook itself is still running; wait briefly for it."""
+        if self.closed or self.poll() is not None:
+            return
+        try:
+            if self.job is not None:
+                self.job.terminate()
+            else:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def close(self):
+        self.closed = True
+        if self.job is not None:
+            self.job.close()
+            self.proc.close()
+
+
+class _HookRequest:
+    """A yield or drain request waiting for, or running, the --on-yield hook. Ordered earliest deadline first; a request
+    with no deadline — a yield request, or a drain whose deadline could not be read — after every one that has one, in
+    the order they were seen. `key` is what the claim's reads list it as; `reread` is set once its hook was stopped for
+    a more urgent request, so the claim is read again before it is asked again."""
+
+    __slots__ = ("kind", "entry", "deadline", "seq", "seen", "who", "key", "reread")
+
+    def __init__(self, kind, entry, deadline, seq, who, key=None):
+        self.kind, self.entry, self.deadline, self.seq, self.who, self.key = kind, entry, deadline, seq, who, key
+        self.seen = time.monotonic()
+        self.reread = False
+
+    def order(self):
+        return (self.deadline is None, 0.0 if self.deadline is None else self.deadline, self.seq)
+
+    def answer_by(self):
+        """The instant its hook must have answered, on this host's monotonic clock, or None when it has no deadline."""
+        if self.deadline is None:
+            return None
+        return self.deadline - DRAIN_RELEASE_MARGIN - YIELD_MIN_GRACE_SECONDS - YIELD_STOP_SECONDS
+
+    def protected_until(self):
+        """How long a LESS urgent hook may keep running once this request is waiting: halfway from when it was seen to
+        when its own hook must answer, so its hook keeps at least half the window it had. None without a deadline."""
+        by = self.answer_by()
+        return None if by is None else self.seen + max(0.0, by - self.seen) / 2
 
 
 # --------------------------------------------------------------------------------------------------- providers
@@ -1244,7 +1608,11 @@ class GenericProvider:
 
     On Windows the container is a job object (_Job) holding a trampoline in a console process group of its own; the
     trampoline's pid is that group's id, so the journal_ref keeps the same shape, with a `win:` start token. While this
-    process runs the job object answers whether anything is left; after it exits, nothing can be."""
+    process runs the job object answers whether anything is left; after it exits, nothing can be.
+
+    It deliberately has no observe_execution (kit 1.4): a process group, or a job object, says nothing about which
+    device the job's work reached, so it never reports `running` and a `device_binding: enforced` resource's claim
+    stays `execution: pending` under it. A provider that can see the device subclasses this and adds the method."""
 
     def __init__(self, provider_host_key=None, identity_kind="logical", identity_key=None, capabilities=None):
         self.host_key = provider_host_key or host_key()
@@ -1548,6 +1916,28 @@ class Holder:
         self.heartbeat_started = False
         self.handle = None         # the provider's handle on the job's container, once it exists
         self.expires_mono = None   # the claim's deadline on this host's monotonic clock
+        # Kit 1.4: the request members this claim was filed with, and what they make the sidecar do while it holds.
+        self.claim_mode = "exclusive"
+        self.members = {}
+        self.yield_policy = None   # as declared on the claim; None sent nothing, and the server's default is finish
+        self.on_yield = None       # the --on-yield command, already checked by claim_members()
+        self.seen_requests = set()
+        self.listed_requests = set()  # each request key the latest read listed, or left standing: only those are asked
+        self.listed_drains = {}    # each listed drain's key -> its deadline (monotonic), kept with it while it stands
+        self.newest_read = None    # the server's `now` on the newest read applied: an older one is never applied
+        self.requests_lock = threading.Lock()  # the watcher and the hook runner both read the claim
+        self.request_seq = 0
+        self.hook_cond = threading.Condition()
+        self.hook_pending = []     # _HookRequest, earliest deadline first, waiting for the hook
+        self.hook_proc = None      # the _HookProcess running now
+        self.drain_deadlines = []  # every drain request the claim's latest read listed, by deadline (monotonic)
+        self.yield_stop = threading.Event()
+        self.yield_reason = None
+        self.yield_deadline = None  # the earliest drain deadline the yield stop must keep its grace inside, or None
+        self.claim_row = {}        # the claim as the launch re-read it under the gate
+        self.observation_closed = threading.Event()
+        self.execution_lock = threading.Lock()
+        self.execution_reported = None   # "running" once a positive observation has been reported
 
     # ---- signals
 
@@ -1573,7 +1963,7 @@ class Holder:
     # ---- claim
 
     def claim(self, ttl, wait, job, build_session):
-        body = {"resource_id": self.resource_id, "mode": "exclusive",
+        body = {"resource_id": self.resource_id, "mode": self.claim_mode,
                 "holder_instance": f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(4)}"[:128]}
         if ttl is not None:
             body["ttl_seconds"] = ttl
@@ -1583,6 +1973,8 @@ class Holder:
             body["job"] = job
         if build_session:
             body["build_session_id"] = build_session
+        # Rev 12's members after 1.3's, and only those the caller named: with none, this is kit 1.3's body.
+        body.update(self.members)
         # One key for every retry of this request: a lost reply is answered with the claim as it now stands (§7.1),
         # so a retry can never queue or grant twice.
         key = "postmq-claim-" + secrets.token_hex(16)
@@ -1610,6 +2002,10 @@ class Holder:
         """Queued: re-read the claim on every wake and every 30 s, until it is granted or ends."""
         position = claim.get("position")
         log(f"queued on {self.resource_id} at position {position}; waiting for a grant (wake + {WAIT_TIMER_SECONDS}s timer)")
+        if isinstance(claim.get("drain"), dict):
+            # A drain waits ahead of every ordinary waiter, and asks every holder in its way to yield (§17.5).
+            log(f"a drain: waiting ahead of ordinary waiters until {printable(claim['drain'].get('deadline_at'), 40)}; "
+                "every holder in the way has been asked to yield by then")
         pump = WakePump(self.api).start()
         started = time.monotonic()
         next_timer = started + WAIT_TIMER_SECONDS
@@ -1642,7 +2038,8 @@ class Holder:
                     self.phase = "granted"
                     self.fence = row.get("fence")
                     log(f"granted with fence {self.fence} — noticed by the {trigger} after "
-                        f"{time.monotonic() - started:.1f}s")
+                        f"{time.monotonic() - started:.1f}s" + (" (drained: the way was cleared)"
+                                                                if row.get("drained") is True else ""))
                     return row
                 if state == "queued":
                     if row.get("position") != position:
@@ -1651,9 +2048,25 @@ class Holder:
                     continue
                 self.phase = "done"
                 log(f"the claim ended while queued: {state} ({row.get('end_reason')})")
+                if isinstance(row.get("drain"), dict) and state == "timed_out":
+                    self._name_who_is_in_the_way()
                 return None
         finally:
             pump.stop()
+
+    def _name_who_is_in_the_way(self):
+        """A drain that timed out (§17.5): the claim row says only `timed_out`, and the reason with its `blocking` list
+        went to the inbox as a notice this sidecar never reads. The resource's `holders` name who is still there."""
+        try:
+            resource = self.api.get_resource(self.resource_id, budget=10).get("resource") or {}
+        except (Transient, Refused):
+            return
+        holders = resource.get("holders")
+        if isinstance(holders, list) and holders:
+            log("the drain timed out at its deadline; still holding the resource: "
+                + "; ".join(describe_holder(h) for h in holders[:MAX_REQUESTS] if isinstance(h, dict)))
+        else:
+            log("the drain timed out at its deadline")
 
     # ---- launch sequence (§8.3)
 
@@ -1676,6 +2089,7 @@ class Holder:
             # 2. re-read under the gate.
             result = self.api.get_claim(self.claim_id)
             row, now = result.get("claim") or {}, result.get("now")
+            self.claim_row = row
             margin = seconds_left(row, "expires_at", now)
             if row.get("state") != "granted" or row.get("fence") != fence or margin is None \
                     or margin < LAUNCH_MARGIN_SECONDS:
@@ -1935,22 +2349,405 @@ class Holder:
                 if self.lost.wait(wait):
                     return
 
-    def watch_for_revocation(self, pump: WakePump):
-        """On every wake while the job runs, re-read the claim: a revocation reaches the inbox before the next renew."""
+    def watch_claim(self, pump: WakePump):
+        """While the job runs, re-read the claim on every wake — a revocation, a yield request and a drain request all
+        reach the inbox before the next renew. Under a policy that can yield it also re-reads every WAIT_TIMER_SECONDS:
+        the agent shares this inbox and may lease the notice first (§7.7), and a yield that waits for some unrelated
+        wake is no yield. With no yielding policy the timer stays off, so a kit 1.3 invocation makes kit 1.3's calls."""
+        timer = WAIT_TIMER_SECONDS if self.yield_policy in YIELDING_POLICIES else None
+        next_timer = None if timer is None else time.monotonic() + timer
         while self.phase == "running" and not self.lost.is_set():
+            trigger = None
             try:
-                kind, _ = pump.events.get(timeout=1.0)
+                kind, detail = pump.events.get(timeout=1.0)
+                if kind == "wake":
+                    trigger = "wake"
+                elif kind == "fatal":
+                    # The stream is gone for good (a scope it lacks, a stream the server closed). Say what is left.
+                    log(f"{detail}; " + (f"yield and drain requests are read on the {timer:.0f}s timer alone"
+                                         if timer is not None else "a revocation is seen at the next renew"))
             except queue.Empty:
+                pass
+            if trigger is None and next_timer is not None and time.monotonic() >= next_timer:
+                trigger = "timer"
+            if trigger is None or self.phase != "running":
                 continue
-            if kind != "wake" or self.phase != "running":
-                continue
-            try:
-                row = self.api.get_claim(self.claim_id, budget=10).get("claim") or {}
-            except (Transient, Refused):
-                continue
-            if row.get("state") != "admitted" or row.get("fence") != self.fence:
-                self._lose(f"the claim now reads {row.get('state')} ({row.get('end_reason')})")
+            if next_timer is not None:
+                next_timer = time.monotonic() + timer
+            self._read_claim()
+
+    def _read_claim(self, budget=10.0):
+        """Re-read the claim: one no longer ours is lost, and its yield and drain requests are noticed. False when it
+        could not be read or is no longer ours. Called by the watcher, and by the hook runner before it asks a hook
+        again (_fresh_read)."""
+        try:
+            result = self.api.get_claim(self.claim_id, budget=budget)
+        except (Transient, Refused):
+            return False
+        row = result.get("claim") or {}
+        if row.get("state") != "admitted" or row.get("fence") != self.fence:
+            self._lose(f"the claim now reads {row.get('state')} ({row.get('end_reason')})")
+            return False
+        try:
+            self._notice_requests(row, result.get("now"))
+        except Exception as error:  # noqa: BLE001 — a request this sidecar cannot read must never cost the claim
+            log(f"could not read the claim's yield or drain requests ({type(error).__name__}); the job runs on")
+        return True
+
+    def _notice_requests(self, row, now):
+        """Each NEW entry in the claim's `drain_requests` and `yield_requests` (§17.8), noticed once and answered
+        earliest deadline first (_HookRequest). The server gives an entry no id, so an entry is what it carries: one request read
+        on ten passes is one request, and a second drain from the same requester with another deadline is a new one.
+        Every drain the read lists, new or not, is also a deadline a yield stop's grace must end inside, and every entry
+        it lists is one a hook may still be asked about: a request this read no longer lists was withdrawn, served or
+        timed out, and its hook is not asked (run_hooks).
+
+        Two reads can disagree without either being wrong. The watcher and the hook runner read the claim on their own
+        threads, and the lock orders their APPLYING, not their reading: a read the server answered before a withdrawal
+        can land after one it answered since. So a read whose server `now` is older than the newest one applied is
+        dropped whole, and once one with a `now` has been applied, so is one without. The order is the server's clock:
+        a replica whose clock lagged another's would have its answers dropped for as long as the lag.
+
+        And absence means withdrawn only where the list was complete: the server shows at most MAX_REQUESTS of each,
+        out of the first REQUEST_WINDOW queued claims, so when a list may have been cut a request it leaves out is
+        unknown, and keeps the standing the previous read gave it — a drain only until its deadline, past which the
+        server has timed it out."""
+        stamp = parse_time(now)
+        with self.requests_lock:
+            if self.newest_read is not None and (stamp is None or stamp < self.newest_read):
                 return
+            if stamp is not None:
+                self.newest_read = stamp
+            depth = row.get("queue_depth")
+            fresh, drains, listed = [], {}, set()
+            for kind, entries in (("drain", row.get("drain_requests")), ("yield", row.get("yield_requests"))):
+                complete = isinstance(entries, list) and len(entries) < MAX_REQUESTS \
+                    and (kind == "drain" or (_whole(depth) and depth < REQUEST_WINDOW))
+                for entry in (entries[:MAX_REQUESTS] if isinstance(entries, list) else []):
+                    if not isinstance(entry, dict):
+                        continue
+                    deadline = None
+                    key = kind + ":" + json.dumps(entry, sort_keys=True)
+                    if kind == "drain":
+                        left = seconds_left(entry, "deadline_at", now)
+                        if left is not None:
+                            deadline = time.monotonic() + left
+                            drains[key] = deadline
+                    listed.add(key)
+                    if key in self.seen_requests:
+                        continue
+                    self.seen_requests.add(key)
+                    self.request_seq += 1
+                    fresh.append(_HookRequest(kind, entry, deadline, self.request_seq, self._requester(kind, entry),
+                                              key))
+                if complete:
+                    continue
+                for key in self.listed_requests:
+                    if not key.startswith(kind + ":") or key in listed:
+                        continue
+                    deadline = self.listed_drains.get(key)
+                    if deadline is not None and deadline <= time.monotonic():
+                        continue
+                    listed.add(key)
+                    if deadline is not None:
+                        drains[key] = deadline
+            self.listed_drains = drains
+            self.drain_deadlines = list(drains.values())
+            self.listed_requests = listed
+            fresh.sort(key=_HookRequest.order)
+            hooked = [request for request in fresh if self._answer_request(request)]
+            if hooked:
+                with self.hook_cond:
+                    self.hook_pending.extend(hooked)
+                    self.hook_pending.sort(key=_HookRequest.order)
+                    self.hook_cond.notify_all()
+
+    @staticmethod
+    def _requester(kind, entry):
+        name = entry.get("requested_by_friendly_name") if kind == "drain" else entry.get("holder_friendly_name")
+        return printable(name, 128) or "another account"
+
+    def _answer_request(self, request):
+        """§17.5: the declared policy decides, and nothing else. finish and none run on; yield and cancel stop the job
+        (or let the hook decide); checkpoint always asks the hook, because only it can checkpoint the job. True when the
+        hook is to be asked."""
+        kind, entry, who = request.kind, request.entry, request.who
+        if kind == "drain":
+            left = None if request.deadline is None else request.deadline - time.monotonic()
+            what = (f"a drain request from {who}, deadline {printable(entry.get('deadline_at'), 40)}"
+                    + ("" if left is None else f" ({max(0, round(left))}s from now)")
+                    + (f", reason: {printable(entry.get('reason'), 200)}" if entry.get("reason") else ""))
+        else:
+            what = (f"a yield request: {who} is waiting ({printable(entry.get('mode'), 16)} "
+                    f"x{printable(entry.get('quantity'), 16)}) since {printable(entry.get('waiting_since'), 40)}")
+        policy = self.yield_policy or "finish"
+        if policy not in YIELDING_POLICIES:
+            log(f"{what}; this claim declared yield_policy {policy}, so the job runs to its own end")
+            return False
+        if self.on_yield is not None:
+            log(f"{what}; yield_policy {policy}: asking the --on-yield hook")
+            return True
+        # yield or cancel, no hook: the policy this holder declared is its own authority to stop its job (§17.5).
+        log(f"{what}; yield_policy {policy}: stopping the job to make way")
+        self._yield_now(f"{kind} request from {who}", request.deadline)
+        return False
+
+    def _yield_now(self, reason, deadline):
+        """Ask supervise() to stop the job and release it. Only ever under a yielding policy — checked here as well as
+        by every caller, so no path can preempt a job its holder promised to finish. The stop's grace is kept inside the
+        earliest drain deadline in play — this request's, and every drain the claim's latest read lists — which is what
+        `cancel` promises (§17.5). supervise() reads it as the stop begins (_yield_grace)."""
+        if self.yield_policy not in YIELDING_POLICIES:
+            return
+        deadlines = [d for d in [deadline, self.yield_deadline, *self.drain_deadlines] if d is not None]
+        self.yield_deadline = min(deadlines) if deadlines else None
+        if not self.yield_stop.is_set():
+            self.yield_reason = reason
+            self.yield_stop.set()
+
+    def _yield_grace(self):
+        """The yield stop's grace, read as the stop begins: STOP_GRACE_SECONDS, cut so that it ends DRAIN_RELEASE_MARGIN
+        inside the earliest drain deadline in play, and never below YIELD_MIN_GRACE_SECONDS. In play means the one
+        _yield_now kept AND every drain the claim's latest read lists, because a read can land between a hook's exit 0
+        and the stop, and _yield_now is not called again for it."""
+        deadlines = [d for d in [self.yield_deadline, *self.drain_deadlines] if d is not None]
+        if not deadlines:
+            return STOP_GRACE_SECONDS
+        return max(YIELD_MIN_GRACE_SECONDS,
+                   min(STOP_GRACE_SECONDS, min(deadlines) - time.monotonic() - DRAIN_RELEASE_MARGIN))
+
+    def _hooks_live(self):
+        return self.phase == "running" and not self.lost.is_set() and not self.yield_stop.is_set()
+
+    def _fresh_read(self):
+        """The hook runner's re-read of the claim, waited for FRESH_READ_SECONDS at most: no hook runs while it waits,
+        and a more urgent request that arrives meanwhile must not find its window spent. The read runs on a thread of
+        its own, because a budget bounds only the retries and a single request may take REQUEST_TIMEOUT_SECONDS; one
+        that answers late is still applied when it lands, and if a newer read landed first it is dropped
+        (_notice_requests). True when it was read within the bound."""
+        done, outcome = threading.Event(), []
+
+        def read():
+            try:
+                outcome.append(self._read_claim(budget=FRESH_READ_SECONDS))
+            except Exception:  # noqa: BLE001 — a read this runner cannot make must not stop every later hook
+                outcome.append(False)
+            finally:
+                done.set()
+        threading.Thread(target=read, name="postmq-claim-reread", daemon=True).start()
+        return done.wait(FRESH_READ_SECONDS) and bool(outcome and outcome[0])
+
+    def run_hooks(self):
+        """--on-yield, one request at a time and earliest deadline first, on its own thread so renewals, a lost claim and
+        the job's own end are still watched while a hook checkpoints. Exit 0 yields: the job is stopped and released.
+        Any other status — or a hook that cannot start, or one still running at its budget (stopped) — leaves the job
+        running: the holder is then named if a drain times out, and nobody is preempted. A hook stopped so that a more
+        urgent request can be answered did not answer, so its request waits to be asked again — but only if it still
+        stands. A request is asked only while the claim's latest read lists it, and one that waited out another hook
+        because its own was stopped is read for afresh first: a drain withdrawn or a waiter served meanwhile must not
+        have the job stopped for it by a hook that exits 0. For the same reason an exit 0 is acted on only while the
+        latest read still lists its request: one withdrawn while its hook ran is answered, and the job runs on."""
+        while self._hooks_live():
+            with self.hook_cond:
+                if not self.hook_pending:
+                    self.hook_cond.wait(0.5)
+                    continue
+                request = self.hook_pending.pop(0)
+            if request.reread:
+                # Its hook was stopped, and it has waited since: read the claim before asking again. A failed or slow
+                # read leaves the latest one to decide, and anything more urgent it finds is asked first.
+                request.reread = False
+                if not self._fresh_read() and self._hooks_live():
+                    log(f"could not read the claim again within {FRESH_READ_SECONDS:.0f}s before asking the --on-yield "
+                        f"hook about the {request.kind} request from {request.who} a second time; asking on the "
+                        "claim's latest read")
+                with self.hook_cond:
+                    self.hook_pending.append(request)
+                    self.hook_pending.sort(key=_HookRequest.order)
+                continue
+            if request.key is not None and request.key not in self.listed_requests:
+                log(f"the {request.kind} request from {request.who} is no longer on the claim; the --on-yield hook is "
+                    "not asked about it")
+                continue
+            code, budget, urgent = self._run_hook(request)
+            if code == 0 and request.key is not None and request.key not in self.listed_requests:
+                # Withdrawn, served or timed out while its hook ran: the yes answers a request that no longer stands.
+                log(f"the --on-yield hook yielded to the {request.kind} request from {request.who}, but the claim no "
+                    "longer lists it; the job keeps running")
+            elif code == 0:
+                self._yield_now(f"the --on-yield hook yielded to the {request.kind} request from {request.who}",
+                                request.deadline)
+            elif not self._hooks_live():
+                return
+            elif urgent is not None:
+                log(f"stopped the --on-yield hook for the {request.kind} request from {request.who} to answer the more "
+                    f"urgent {urgent.kind} request from {urgent.who}; it is asked again afterwards if the job still runs "
+                    "and the claim still lists it")
+                request.reread = True
+                with self.hook_cond:
+                    self.hook_pending.append(request)
+                    self.hook_pending.sort(key=_HookRequest.order)
+            elif code is None:
+                log(f"the --on-yield hook did not answer the {request.kind} request from {request.who} within "
+                    f"{budget:.0f}s; the job keeps running")
+            else:
+                log(f"the --on-yield hook exited {code}: not yielding to the {request.kind} request from {request.who}; "
+                    "the job keeps running")
+
+    def _hook_bound(self, running, stop_at, now):
+        """When the hook answering `running` must stop: its own budget's end, or sooner, the point a WAITING request more
+        urgent than it is protected until (_HookRequest.protected_until) — or at once, for one already inside its margin
+        (its hook must answer within HOOK_MIN_SECONDS): there is no half of its window left to wait out, and its hook
+        then gets the HOOK_MIN_SECONDS floor, which could still answer. A drain with that floor or less left stops
+        nothing: its hook could not answer before the deadline, and the hook it would stop must start again from
+        nothing. Nor does a request the claim's latest read no longer lists. Returns (instant, the request that set it
+        or None)."""
+        bound, by = stop_at, None
+        with self.hook_cond:
+            waiting = list(self.hook_pending)
+        listed = self.listed_requests
+        for other in waiting:
+            if other.deadline is None or other.order() >= running.order() or other.deadline <= now + HOOK_MIN_SECONDS:
+                continue
+            if other.key is not None and other.key not in listed:
+                continue
+            until = now if other.answer_by() <= now + HOOK_MIN_SECONDS else other.protected_until()
+            if until < bound:
+                bound, by = until, other
+        return bound, by
+
+    def _run_hook(self, request):
+        """(exit status or None, the budget it started with, the more urgent _HookRequest it was stopped for or None).
+        The request goes in as JSON on stdin; the hook's output goes to this sidecar's stderr, never the job's stdout.
+        It is looked at every HOOK_POLL_SECONDS: an exit is its answer; the claim ending, its budget running out, or a
+        more urgent request reaching the point it is protected until each stop it whole (_HookProcess)."""
+        start = time.monotonic()
+        answer_by = request.answer_by()
+        stop_at = start + HOOK_BUDGET_SECONDS if answer_by is None else max(start + HOOK_MIN_SECONDS, answer_by)
+        budget = stop_at - start
+        policy = self.yield_policy
+        payload = {"kind": request.kind, "claim_id": self.claim_id, "fence": self.fence,
+                   "resource_id": self.resource_id, "yield_policy": policy, "request": request.entry}
+        env = dict(os.environ)
+        env.update({"POSTMQ_CLAIM_ID": self.claim_id, "POSTMQ_CLAIM_FENCE": str(self.fence),
+                    "POSTMQ_RESOURCE_ID": self.resource_id, "POSTMQ_YIELD_KIND": request.kind,
+                    "POSTMQ_YIELD_POLICY": policy, "POSTMQ_YIELD_REQUESTER": request.who,
+                    "POSTMQ_HOOK_SECONDS": str(max(1, int(budget)))})
+        if request.kind == "drain":
+            env["POSTMQ_DRAIN_DEADLINE"] = printable(request.entry.get("deadline_at"), 40)
+            if request.deadline is not None:
+                env["POSTMQ_DRAIN_SECONDS_LEFT"] = str(max(0, int(request.deadline - time.monotonic())))
+        if isinstance(self.handle, dict) and _whole(self.handle.get("pgid")):
+            env["POSTMQ_JOB_PGID"] = str(self.handle["pgid"])
+        try:
+            out = sys.stderr.fileno()
+        except (AttributeError, OSError, ValueError):
+            out = subprocess.DEVNULL
+        try:
+            hook = _HookProcess(hook_command(self.on_yield), env, json.dumps(payload).encode("utf-8"), out)
+        except (OSError, ValueError, Fatal) as error:
+            log(f"the --on-yield hook could not be started ({type(error).__name__})")
+            return None, budget, None
+        self.hook_proc = hook
+        try:
+            while True:
+                code = hook.poll()
+                if code is not None:
+                    return code, budget, None
+                now = time.monotonic()
+                bound, urgent = self._hook_bound(request, stop_at, now)
+                if self.lost.is_set() or self.phase != "running" or now >= bound:
+                    hook.kill()
+                    # It may have answered in the instant before it was stopped; an exit 0 is still its answer.
+                    return (0, budget, None) if hook.poll() == 0 else (None, budget, urgent)
+                time.sleep(min(HOOK_POLL_SECONDS, max(0.0, bound - now)))
+        finally:
+            self.hook_proc = None
+            hook.close()
+
+    def _kill_hook(self):
+        hook = self.hook_proc
+        if hook is not None:
+            hook.kill()
+
+    # ---- the silicon receipt (§17.7)
+
+    def observe(self):
+        """Ask the provider whether it has SEEN the job on the granted device, every OBSERVE_POLL_SECONDS while it says
+        no, inside one BUDGET_OBSERVE window, and report `running` on the first positive answer. Nothing else ever
+        reports running: a job that was started is launch intent, which the admission already said."""
+        if getattr(self.provider, "observe_execution", None) is None:
+            return
+        window_end = time.monotonic() + BUDGET_OBSERVE
+        while not self.observation_closed.is_set():
+            left = window_end - time.monotonic()
+            if left <= 0:
+                log(f"the provider did not observe the job on the device within {BUDGET_OBSERVE:.0f}s; running is not "
+                    "reported")
+                return
+            try:
+                answer = self.bounded.call("observe_execution", left, self.handle, dict(self.claim_row))
+            except ProviderUnavailable as error:
+                log(f"observe_execution unavailable ({error}); running is not reported")
+                return
+            observed, device_key = observation(answer)
+            if observed:
+                self._report_running(device_key, window_end)
+                return
+            if self.observation_closed.wait(OBSERVE_POLL_SECONDS):
+                return
+
+    def _report_running(self, device_key, window_end):
+        """Report `running` for an observation just made, retrying a transient failure — a dropped connection, a 5xx, a
+        rate limit — after Retry-After or a back-off of 1, 2, 4… seconds up to TRANSPORT_RETRY_SECONDS, for as long as
+        the observation window is open and the job runs. Every retry carries the instant of the observation, not of the
+        retry. Safe to repeat: a repeated report is one more receipt, and claim.execution_observed is written once."""
+        observed_at = utc_now()
+        attempt = 0
+        while True:
+            result = self._report_execution("running", device_key=device_key, observed_at=observed_at, retry=True)
+            if not isinstance(result, Transient):
+                return
+            wait = result.retry_after if result.retry_after is not None \
+                else min(TRANSPORT_RETRY_SECONDS, float(2 ** attempt))
+            if time.monotonic() + wait >= window_end:
+                log(f"the running report did not complete ({result}) and the observation window closes before a retry; "
+                    "running is not reported")
+                return
+            attempt += 1
+            log(f"the running report did not complete ({result}); retrying in {wait:.0f}s")
+            if self.observation_closed.wait(wait):
+                return
+
+    def _report_execution(self, execution, device_key=None, observed_at=None, retry=False):
+        """POST /v1/claims/{id}/execution (§21.14A). Under one lock, so an end report waits for an in-flight `running`
+        and the server sees them in order; and `running` is refused here once the observation is closed — the job has
+        ended, and a running report after its end would be a claim about silicon nobody saw. Never raises: a report
+        that fails must not cost the job its release. With `retry`, one attempt, and a transient failure is RETURNED
+        (the Transient) for _report_running to retry outside the lock, where the job's end can interrupt the wait."""
+        with self.execution_lock:
+            if execution == "running" and (self.observation_closed.is_set() or self.execution_reported):
+                return False
+            body = {"fence": self.fence, "execution": execution, "provider": self.receipt_provider,
+                    "provider_host_key": self.host_key, "observed_at": observed_at or utc_now()}
+            if device_key:
+                body["device_key"] = device_key
+            try:
+                # Safe to retry: a repeated report is one more receipt, and claim.execution_observed is written once.
+                self.api.call("POST", f"/v1/claims/{self.claim_id}/execution", body, budget=0 if retry else 30)
+            except Transient as error:
+                if retry:
+                    return error
+                log(f"the {execution} report was not accepted ({error})")
+                return False
+            except (Refused, Fatal) as error:
+                log(f"the {execution} report was not accepted ({error.code if isinstance(error, Refused) else error})")
+                return False
+            if execution == "running":
+                self.execution_reported = "running"
+                log("reported running: the provider observed the job on the granted device"
+                    + (f" ({printable(device_key, 64)})" if device_key else ""))
+            return True
 
     def _guarded(self, target, *args):
         """A thread's uncaught exception would print a traceback that can quote response data; name its type only,
@@ -1960,6 +2757,15 @@ class Holder:
         except Exception as error:  # noqa: BLE001
             log(f"the {target.__name__} thread stopped on an unexpected {type(error).__name__}")
             self._lose(f"the {target.__name__} thread stopped")
+
+    @staticmethod
+    def _quietly(target):
+        """A helper thread whose failure costs only what it was doing — a hook not run, an observation not reported —
+        never the claim: name the exception's type, and stop."""
+        try:
+            target()
+        except Exception as error:  # noqa: BLE001
+            log(f"the {target.__name__} thread stopped on an unexpected {type(error).__name__}")
 
     def _lose(self, reason):
         if not self.lost.is_set():
@@ -1998,7 +2804,11 @@ class Holder:
         """Run the job to its end, a lost claim, or an interruption; release with a receipt; return the exit code."""
         pump = WakePump(self.api).start()
         self._start_heartbeat()  # a no-op when admission already started it, which it always does on this path
-        threading.Thread(target=self._guarded, args=(self.watch_for_revocation, pump), daemon=True).start()
+        threading.Thread(target=self._guarded, args=(self.watch_claim, pump), daemon=True).start()
+        if self.on_yield is not None:
+            threading.Thread(target=self._quietly, args=(self.run_hooks,), daemon=True).start()
+        if getattr(self.provider, "observe_execution", None) is not None:
+            threading.Thread(target=self._quietly, args=(self.observe,), daemon=True).start()
         try:
             # Why the run ended (the exit status) and whether WE stopped the job (the receipt's `execution`) are two
             # facts: a job left to finish under `revocation: unavailable` completed, though its claim was lost.
@@ -2023,6 +2833,14 @@ class Holder:
                         unstoppable = not self._stop(STOP_GRACE_SECONDS)
                         _, returncode = self._inspect()
                         break
+                if self.yield_stop.is_set() and stopped_by is None and self.yield_policy in YIELDING_POLICIES:
+                    # Asked to make way, and this claim's own yield policy allows it (§17.5): stop OUR job, release.
+                    stopped_by, aborted = "yielded", True
+                    grace = self._yield_grace()
+                    log(f"stopping the job to make way ({self.yield_reason}), with {grace:.0f}s of grace")
+                    unstoppable = not self._stop(grace)
+                    _, returncode = self._inspect()
+                    break
                 if self.interrupted is not None and stopped_by is None:
                     break
                 # The deadline, watched here as well as by the heartbeat: a renew request can block for its whole
@@ -2044,8 +2862,10 @@ class Holder:
             self.phase = "done" if self.phase == "running" else self.phase
             return self._release(returncode, stopped_by, aborted, unstoppable)
         finally:
-            self.lost.set()  # stops the heartbeat and the watcher
+            self.lost.set()  # stops the heartbeat, the watcher and the hook runner
+            self.observation_closed.set()
             pump.stop()
+            self._kill_hook()
 
     def _stop(self, grace) -> bool:
         """The provider's stop, under its budget (grace + BUDGET_STOP_EXTRA). False when it could not be stopped in
@@ -2077,6 +2897,15 @@ class Holder:
                     receipt["detail"] = "release_receipt returned no cleanup verdict"
             except ProviderUnavailable as error:
                 receipt["detail"] = f"release_receipt unavailable: {error}"
+        if stopped_by == "yielded" and "detail" not in receipt:
+            receipt["detail"] = f"stopped to make way: {self.yield_reason}"[:MAX_TEXT]
+        # The silicon receipt's end (§17.7), before the release, while the claim still accepts it — and only after a
+        # `running` that a provider observed. The lock waits out a `running` still in flight, so the order holds.
+        self.observation_closed.set()
+        with self.execution_lock:
+            observed = self.execution_reported == "running"
+        if observed and not self.lost.is_set():
+            self._report_execution(execution)
         try:
             # Safe to retry: an exact replay of a completed release answers 200 (Appendix A.2).
             _, result = self.api.call("POST", f"/v1/claims/{self.claim_id}/release",
@@ -2091,6 +2920,8 @@ class Holder:
         self.phase = "done"
         if stopped_by == "lost" or late:
             return EXIT_LOST
+        if stopped_by == "yielded":
+            return EXIT_YIELDED
         if stopped_by == "interrupted":
             return 128 + (self.interrupted or signal.SIGTERM)
         if returncode is None:
@@ -2186,37 +3017,75 @@ def journal_verdict(entries, claim_id: str, fence: int):
     return "unknown", "this host's journal has no launch for this claim"
 
 
-def reconcile_target(api: Api, resource_id: str):
-    """The claim the coordinator is waiting on before `resource_id` can be lent again (`reconciling_for_claim_id`,
-    rev 9), or None. It is the only claim a reconcile can change anything for, and the only way to learn it when this
-    host's journal never recorded the claim — a gate that timed out, a sidecar killed while queued, a launch from
-    another host, an owner's revoke. Shown to adapters only; a server that predates rev 9 sends nothing, and the
-    journal is then the fallback."""
+def journaled_slots(resource_row: dict, entries) -> list:
+    """The resource's `reconciling_slots` (rev 12, §17.3: adapters only, oldest first) whose claim this host's journal
+    names — the slots this host launched, which only it can speak for. Empty when the server predates rev 12."""
+    slots = resource_row.get("reconciling_slots")
+    if not isinstance(slots, list):
+        return []
+    journaled = {e.claim for e in entries if e.kind in ("intent", "launched") and e.claim}
+    found = []
+    for slot in slots[:MAX_REQUESTS]:
+        claim = slot.get("claim_id") if isinstance(slot, dict) else None
+        if isinstance(claim, str) and ULID.match(claim) and claim in journaled and claim not in found:
+            found.append(claim)
+    return found
+
+
+def reconcile_targets(api: Api, resource_id: str, entries) -> list:
+    """The claims a reconcile should report on, in order, when none was named.
+
+    First, every reconciling slot this host's journal names (rev 12). On a shared resource several slots can be
+    reconciling at once, and the single `reconciling_for_claim_id` the wire projects for kit 1.3 is only the OLDEST of
+    them — often another host's, about which this host's journal can say nothing but `unknown`. Then, when no slot is
+    this host's, that projected claim (`reconciling_for_claim_id`, rev 9): the only way to learn the claim when this
+    host's journal never recorded it — a gate that timed out, a sidecar killed while queued, a launch from another host,
+    an owner's revoke. Both are shown to adapters only; a server that predates rev 9 sends neither, and the newest
+    claim in the journal is then the caller's fallback."""
     try:
         row = api.get_resource(resource_id, budget=30).get("resource") or {}
     except (Transient, Refused):
-        return None
+        return []
+    mine = journaled_slots(row, entries)
+    if mine:
+        return mine
     target = row.get("reconciling_for_claim_id")
-    return target if isinstance(target, str) and ULID.match(target) else None
+    return [target] if isinstance(target, str) and ULID.match(target) else []
+
+
+def reconcile_target(api: Api, resource_id: str):
+    """The first claim reconcile_targets() names for `resource_id`, or None (kit 1.3's single-target entry point)."""
+    targets = reconcile_targets(api, resource_id, HostGate(resource_id).entries())
+    return targets[0] if targets else None
 
 
 def reconcile(api: Api, resource_id: str, claim_id, provider, quiet=False, bounded=None):
     """Reconcile `resource_id` under the gate, with the provider's verdict, for `claim_id` — or, when that is None, for
-    the claim the coordinator is waiting on, else the newest one this host's journal names. Returns the outcome
+    each claim reconcile_targets() names, else the newest one this host's journal names. Returns the first outcome
     reported, or None when there was no claim to name."""
     bounded = bounded or Bounded(provider)
     decl = declared(bounded)
     gate = HostGate(resource_id)
-    if claim_id is None:
-        claim_id = reconcile_target(api, resource_id)
-    if claim_id is None:
+    if claim_id is not None:
+        return _reconcile_one(api, resource_id, claim_id, bounded, decl, gate, quiet)
+    targets = reconcile_targets(api, resource_id, gate.entries())
+    if not targets:
         newest = next((e for e in gate.entries() if e.kind in ("intent", "launched")), None)
         if newest is None:
             if not quiet:
                 log("the resource is not waiting on a claim this account can see, and this host's journal names none; "
                     "pass --claim to report on one")
             return None
-        claim_id = newest.claim
+        targets = [newest.claim]
+    first = None
+    for target in targets:
+        outcome = _reconcile_one(api, resource_id, target, bounded, decl, gate, quiet)
+        first = first if first is not None else outcome
+    return first
+
+
+def _reconcile_one(api: Api, resource_id: str, claim_id: str, bounded, decl, gate, quiet):
+    """One claim's reconcile, under the gate. The outcome reported, or None when the claim is live or unreadable."""
     row = api.get_claim(claim_id).get("claim") or {}
     fence = row.get("fence")
     if row.get("state") in LIVE_STATES:
@@ -2258,23 +3127,75 @@ def reconcile(api: Api, resource_id: str, claim_id, provider, quiet=False, bound
 
 # --------------------------------------------------------------------------------------------------- library entry points
 
+# Rev 12's request members, by the flag that sends each and the coordinator they need (design §17.10's phases). A
+# coordinator without one refuses it 400 POSTMQ_MALFORMED_REQUEST naming it in details.field — "is not a field of this
+# request" — which on its own reads like a kit bug rather than a server that predates the flag.
+REV12_CLAIM_FLAGS = {"quantity": ("--quantity", "B-1"), "yield_policy": ("--yield-policy", "B-1"),
+                     "expected_seconds": ("--expected-seconds", "B-1"), "resumes_claim_id": ("--resumes", "B-1"),
+                     "drain": ("--drain", "B-1"), "purpose": ("--purpose", "B-2")}
+REV12_REGISTRATION_FLAGS = {"mode": ("--mode", "B-1"), "quantity": ("--quantity", "B-1"),
+                            "identity_crosscheck": ("--identity-crosscheck (or a provider that declares one)", "B-2")}
+REV12_PHASES = {"B-1": "rev 12 phase B-1 (#1399: shared claims, yield policies, drains)",
+                "B-2": "rev 12 phase B-2 (#1400: parent claims, maintenance, identity cross-checks)"}
+
+
+def _needs_phase_hint(code, details, flags):
+    """A malformed-request refusal naming a rev 12 member (details.field): which coordinator that member needs."""
+    field = details.get("field") if code == "POSTMQ_MALFORMED_REQUEST" and isinstance(details, dict) else None
+    if field not in flags:
+        return None
+    flag, phase = flags[field]
+    return (f"{flag} needs a coordinator running {REV12_PHASES[phase]}; one that predates it refuses the member as a "
+            "field it does not take. Run without it, or ask the workspace owner which revision serves this workspace")
+
+
+def _request_refusal_hint(code, resource, details=None):
+    """What to do about a refusal of a rev 12 claim member, beside the server's own message; None for any other."""
+    phase = _needs_phase_hint(code, details, REV12_CLAIM_FLAGS)
+    if phase is not None:
+        return phase
+    if code == "POSTMQ_CLAIM_DRAIN_FORBIDDEN":
+        return ("a drain (--drain) or a maintenance claim (--purpose maintenance) needs the incumbent or maintainer role "
+                "on this resource; the workspace owner grants roles on the Resources page")
+    if code == "POSTMQ_CLAIM_MODE_UNSUPPORTED":
+        return ("this resource does not take shared claims (it is registered exclusive, or it has children); claim "
+                "without --mode shared")
+    if code == "POSTMQ_CLAIM_QUANTITY_OUT_OF_RANGE":
+        size = resource.get("quantity")
+        return ("--quantity must fit the resource" + (f", whose quantity is {size}" if _whole(size) else ""))
+    if code == "POSTMQ_CLAIM_RESUMES_INVALID":
+        return "--resumes must name your own earlier claim on this resource, once it has ended"
+    return None
+
+
 def run(provider, resource_id, argv, *, wait=0, job=None, ttl=None, build_session=None, api=None,
-        install_signals=True) -> int:
+        install_signals=True, mode=None, quantity=None, yield_policy=None, expected_seconds=None, resumes=None,
+        purpose=None, drain=None, drain_reason=None, on_yield=None) -> int:
     """Claim `resource_id` (queueing up to `wait` seconds), run `argv` in the provider's container under the §8.3
     launch sequence, keep the claim alive, and release it with the provider's receipt. Returns the exit status the
-    CLI would: the command's own when it ran with the claim held to the end, else 4/5/6/128+N."""
+    CLI would: the command's own when it ran with the claim held to the end, else 4/5/6/7/128+N.
+
+    Kit 1.4's members — `mode`, `quantity`, `yield_policy`, `expected_seconds`, `resumes` (resumes_claim_id),
+    `purpose`, `drain` (deadline seconds) and `drain_reason` — are sent only when given, and `on_yield` is the hook that
+    answers a yield or drain request (see the module docstring). With none of them this is kit 1.3's run."""
     argv = list(argv)
     if not argv:
         raise Fatal("give the command to run")
     if job is not None and not isinstance(job, dict):
         raise Fatal("job must be a JSON object")
+    claim_mode, members = claim_members(mode, quantity, yield_policy, expected_seconds, resumes, purpose, drain,
+                                        drain_reason, on_yield)
     api = api or Api()
     holder = Holder(api, resource_id, provider)
+    holder.claim_mode, holder.members = claim_mode, members
+    holder.yield_policy, holder.on_yield = yield_policy, on_yield
     resource = (api.get_resource(resource_id).get("resource") or {})
     holder.revocation = ((resource.get("enforcement") or {}).get("revocation")) or "advisory"
-    if resource.get("availability") == "reconciling":
+    if resource.get("availability") == "reconciling" or (
+            resource.get("reconciling_slots") and journaled_slots(resource, holder.gate.entries())):
         # §7.4: in practice the next claimant's sidecar on the host reconciles; a report about the wrong claim is
-        # recorded as late and changes nothing, so trying is always safe.
+        # recorded as late and changes nothing, so trying is always safe. On a shared resource a slot this host
+        # launched can be reconciling while the summary reads `held` (§17.3), so that counts too.
         try:
             reconcile(api, resource_id, None, provider, quiet=True, bounded=holder.bounded)
         except (Refused, Transient) as error:
@@ -2287,12 +3208,17 @@ def run(provider, resource_id, argv, *, wait=0, job=None, ttl=None, build_sessio
         except Refused as refusal:
             if refusal.code == "POSTMQ_CLAIM_DENIED":
                 reason = refusal.details.get("reason") if isinstance(refusal.details.get("reason"), dict) else {}
-                hint = " (pass --wait SECONDS to queue)" if reason.get("code") == "held_by_peer" and not wait else ""
-                log(f"denied: {reason.get('code')}{hint}")
+                hint = " (pass --wait SECONDS to queue)" \
+                    if reason.get("code") in WAITABLE_CODES and not wait and "drain" not in members else ""
+                log(f"denied: {describe_reason(reason)}{hint}")
                 return EXIT_NOT_GRANTED
             if refusal.code in ("POSTMQ_CLAIM_QUEUE_FULL", "POSTMQ_CLAIM_ALREADY_HELD"):
                 log(f"not claimed: {refusal.code}")
                 return EXIT_NOT_GRANTED
+            hint = _request_refusal_hint(refusal.code, resource, refusal.details)
+            if hint is not None:
+                log(f"not claimed: {refusal.code}: {printable(refusal.message, 300)} — {hint}")
+                return EXIT_CONFIG
             raise
         log(f"claim {holder.claim_id}: {claim.get('state')}")
         if holder.phase == "queued":
@@ -2320,34 +3246,115 @@ def reconcile_resource(provider, resource_id, claim_id=None, *, api=None):
     return reconcile(api or Api(), resource_id, claim_id, provider)
 
 
+def _check_registration_members(body):
+    """Rev 12's registration members, checked before anything is sent (§17.2, §18.1, §18.5)."""
+    mode, quantity = body.get("mode"), body.get("quantity")
+    if mode is not None and mode not in CLAIM_MODES:
+        raise Fatal("--mode is exclusive or shared")
+    if quantity is not None:
+        if mode != "shared":
+            raise Fatal("--quantity is for --mode shared: an exclusive resource is one unit")
+        if not _whole(quantity) or not 1 <= quantity <= MAX_QUANTITY:
+            raise Fatal(f"--quantity is a whole number from 1 to {MAX_QUANTITY}")
+    parent = body.get("parent_resource_id")
+    if parent is not None and (not isinstance(parent, str) or not ULID.match(parent)):
+        raise Fatal("--parent is a PostMQ resource id (26 characters, Crockford base32)")
+    crosscheck = body.get("identity_crosscheck")
+    if crosscheck is not None and (not isinstance(crosscheck, str) or not 1 <= len(crosscheck) <= 128):
+        raise Fatal("--identity-crosscheck is 1 to 128 characters")
+
+
+def describe_registration_refusal(refusal) -> str:
+    """A refused registration in the server's own words, and what to do about it. The rev 12 identity refusals are the
+    ones an adapter meets at boot on a machine it shares with another account, or on a cloned one (§18.5)."""
+    code, message = refusal.code, printable(refusal.message, 300)
+    said = f"registration refused ({code}): {message}"
+    if code == "POSTMQ_RESOURCE_IDENTITY_CONFLICT":
+        owner = refusal.details.get("owner_account") if isinstance(refusal.details.get("owner_account"), dict) else {}
+        who = printable(owner.get("friendly_name"), 128)
+        return (said + " — another account registered this identity" + (f" ({who})" if who else "")
+                + ", and an account outside its adapter set cannot register it. Ask the workspace owner to add this "
+                "account to the resource's adapter set; its registration is then a merge, which changes nothing on "
+                "the record")
+    if code == "POSTMQ_RESOURCE_IDENTITY_MISMATCH":
+        return (said + " — this identity is registered with a different identity_crosscheck: two machines answer to "
+                "one identity (a cloned VM, or two boards with one UUID). Check which machine this is; the owner clears "
+                "the stored cross-check on the Resources page when hardware is replaced")
+    if code == "POSTMQ_RESOURCE_IDENTITY_INVALID":
+        return (said + " — the key is not a usable identity of its kind (a placeholder or all-zero UUID, or a vm key "
+                "missing a part); register the resource as logical, or correct the key")
+    if code == "POSTMQ_RESOURCE_PARENT_INVALID":
+        return (said + " — the parent breaks one of the hierarchy's rules, which the message names: it must exist in "
+                "this workspace, form no cycle, stay within 3 levels and 16 descendants, share the project, and not be "
+                "a shared resource")
+    if code == "POSTMQ_RESOURCE_PARENT_IN_USE":
+        return (said + " — the resource, or a resource in either parent chain, holds or queues a claim or has a slot "
+                "still reconciling; nothing was changed. Register again once it is idle")
+    if code == "POSTMQ_RESOURCE_CAPACITY_IN_USE":
+        return (said + " — mode and quantity change only while nothing occupies the resource and nothing waits on it; "
+                "nothing in this registration was applied")
+    if code == "POSTMQ_IDEMPOTENCY_CONFLICT":
+        return (said + " — the server holds another registration sent under this idempotency key in the last 24 "
+                "hours. This kit keys a registration on its whole body, so the two bodies differed only if the earlier "
+                "one came from another client or an older kit; nothing was applied. The key expires 24 hours after its "
+                "first use")
+    hint = _needs_phase_hint(code, refusal.details, REV12_REGISTRATION_FLAGS)
+    return said + (f" — {hint}" if hint else "")
+
+
 def serve(provider, registration, *, interval=SERVE_INTERVAL_SECONDS, api=None, stop=None, on_registered=None):
     """Speak for a resource: register it from the provider's declaration and `registration` (`kind` and
     `display_name` at least; also `project_id`, `aliases`, `parent_resource_id`, `provider`, `identity_kind`,
-    `identity_key`), then every `interval` seconds report the provider's telemetry and health and reconcile it while it
-    is reconciling or quarantined. Runs until `stop()` is true (or forever); returns the resource id.
+    `identity_key`, and from kit 1.4 `mode`, `quantity` and `identity_crosscheck`, each sent only when given), then
+    every `interval` seconds report the provider's telemetry and health and reconcile it while it is reconciling or
+    quarantined — or while any reconciling slot of it is one this host's journal names, whatever its summary says
+    (§17.3). Runs until `stop()` is true (or forever); returns the resource id. A `merged: true` reply (another account
+    owns the record and this one is in its adapter set, §18.5) is logged and served like any other.
 
     Registering at every start is safe: a re-registration of the same identity by the same account updates in place
     and, under rev 6, does not undo a withdrawal the owner made."""
     api = api or Api()
     bounded = Bounded(provider)
     decl = declared(bounded)
+    # The identity goes exactly as the provider (or the registration) states it: the coordinator canonicalizes it
+    # before its unique index or any comparison sees it (§18.5), so normalizing here would only add a second rule.
     body = {"kind": registration.get("kind"), "display_name": registration.get("display_name"),
             "identity_kind": registration.get("identity_kind") or decl.get("identity_kind"),
             "identity_key": registration.get("identity_key") or decl.get("identity_key"),
             "capabilities": decl.get("capabilities") or {}, "enforcement": decl.get("enforcement") or dict(ADVISORY),
             "receipt_provider": decl["receipt_provider"]}
-    for optional in ("project_id", "aliases", "parent_resource_id", "provider"):
+    for optional in ("project_id", "aliases", "parent_resource_id", "provider", "mode", "quantity",
+                     "identity_crosscheck"):
         if registration.get(optional) is not None:
             body[optional] = registration[optional]
+    if "identity_crosscheck" not in body and isinstance(decl.get("identity_crosscheck"), str) \
+            and decl["identity_crosscheck"]:
+        body["identity_crosscheck"] = decl["identity_crosscheck"]
     for required in ("kind", "display_name", "identity_kind", "identity_key"):
         if not isinstance(body.get(required), str) or not body[required]:
             raise Fatal(f"serve needs {required} (from the registration or the provider's declaration)")
-    key = "postmq-serve-" + hashlib.sha256(f"{body['identity_kind']}:{body['identity_key']}".encode()).hexdigest()[:40]
-    _, result = api.call("POST", "/v1/resources", body, idempotency_key=key)
+    _check_registration_members(body)
+    # The key names the WHOLE body in sorted-key form. The server fingerprints a keyed request by its canonical (JCS)
+    # body and answers a key reused with another body 409 POSTMQ_IDEMPOTENCY_CONFLICT for 24 hours (Doc 05 §2.4.1), so
+    # a key that left any member out made a restart that changed it — a parent added, another quantity, a capability
+    # the provider now declares — a conflict rather than a registration. Equal bodies give equal keys, so a retry and
+    # an unchanged restart replay; any change is a new request, which re-registers the identity in place.
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    key = "postmq-serve-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:40]
+    try:
+        _, result = api.call("POST", "/v1/resources", body, idempotency_key=key)
+    except Refused as refusal:
+        raise Fatal(describe_registration_refusal(refusal)) from None
     resource = result.get("resource") or {}
     resource_id = resource.get("resource_id")
     if not isinstance(resource_id, str) or not ULID.match(resource_id):
         raise Transient("the registration response carried no resource id")
+    if result.get("merged") is True:
+        log(f"{resource_id} was already registered by its owner account, and this account is in its adapter set, so "
+            "this registration was a merge (§18.5): the record is the owner's and nothing on it changed")
+    ignored = result.get("parent_ignored")
+    if isinstance(ignored, dict):
+        log(f"the parent {printable(ignored.get('resource_id'), 26)} was ignored: {printable(ignored.get('reason'), 300)}")
     log(f"registered {body['display_name']} as {resource_id}; reporting every {interval:.0f}s")
     if on_registered is not None:
         on_registered(resource_id)
@@ -2363,14 +3370,20 @@ def serve(provider, registration, *, interval=SERVE_INTERVAL_SECONDS, api=None, 
             # single slow read does not silence the adapter for good, but keep declare's verdict.
             bounded = Bounded(provider)
             bounded.spent.add("declare")
+        mine = []
         try:
             _, updated = api.call("PATCH", f"/v1/resources/{resource_id}", {"telemetry": telemetry, "health": health},
                                   budget=30)
-            availability = (updated.get("resource") or {}).get("availability")
+            row = updated.get("resource") or {}
+            availability = row.get("availability")
+            if row.get("reconciling_slots"):
+                # §17.3: on a shared resource a slot this host launched can be reconciling while the summary reads
+                # `held` — kit 1.3's loop never looked then, and the slots piled up toward the occupying cap.
+                mine = journaled_slots(row, HostGate(resource_id).entries())
         except (Refused, Transient) as error:
             log(f"could not report telemetry ({error})")
             availability = None
-        if availability in ("reconciling", "quarantined"):
+        if availability in ("reconciling", "quarantined") or mine:
             try:
                 reconcile(api, resource_id, None, provider, quiet=True, bounded=Bounded(provider))
             except (Refused, Transient, Fatal) as error:
@@ -2404,7 +3417,9 @@ def cmd_run(args) -> int:
         if not isinstance(job, dict):
             raise Fatal("--job must be a JSON object")
     return run(_provider_from(args), args.resource, argv, wait=args.wait, job=job, ttl=args.ttl,
-               build_session=args.build_session)
+               build_session=args.build_session, mode=args.claim_mode, quantity=args.quantity,
+               yield_policy=args.yield_policy, expected_seconds=args.expected_seconds, resumes=args.resumes,
+               purpose=args.purpose, drain=args.drain, drain_reason=args.drain_reason, on_yield=args.on_yield)
 
 
 def cmd_reconcile(args) -> int:
@@ -2416,7 +3431,9 @@ def cmd_reconcile(args) -> int:
 
 def cmd_serve(args) -> int:
     registration = {"kind": args.kind, "display_name": args.display_name, "project_id": args.project,
-                    "identity_kind": args.identity_kind, "identity_key": args.identity_key}
+                    "identity_kind": args.identity_kind, "identity_key": args.identity_key,
+                    "mode": args.resource_mode, "quantity": args.quantity, "parent_resource_id": args.parent,
+                    "identity_crosscheck": args.identity_crosscheck}
     stopping = threading.Event()
 
     def handler(signum, _frame):
@@ -2431,21 +3448,44 @@ def cmd_serve(args) -> int:
     return 0
 
 
+# Rev 12's resource members (§17.8, §18.8), printed by `status` when the server sends them — absent ones are left out
+# rather than printed as null, so a server that predates rev 12 prints what kit 1.3 printed.
+STATUS_RESOURCE_MEMBERS = ("mode", "quantity", "occupied_quantity", "free_quantity", "holders", "stored_availability",
+                           "via", "reachability", "reachability_observed_at", "parent_resource_id", "children_count",
+                           "reconciling_for_claim_id", "reconciling_slots", "protected_windows", "demand",
+                           "coordination_features")
+# The claim members `status --claim` prints: its occupancy, the policy it declared, and what it is being asked.
+STATUS_CLAIM_MEMBERS = ("claim_id", "state", "position", "fence", "mode", "quantity", "occupancy", "yield_policy",
+                        "queue_class", "drain", "drained", "expected_seconds", "resumes_claim_id",
+                        "displacement_seconds", "purpose", "expires_at", "wait_deadline_at", "end_reason", "execution",
+                        "execution_observed_at", "device_observed_at", "drain_requests", "yield_requests")
+
+
 def cmd_status(args) -> int:
+    if args.claim is not None and not ULID.match(args.claim):
+        raise Fatal("--claim is not a PostMQ id")
     api = Api()
     result = api.get_resource(args.resource)
     resource = result.get("resource") or {}
     gate = HostGate(args.resource)
     newest = gate.entries()[:5]
-    print(json.dumps({
+    shown = {
         "resource_id": resource.get("resource_id"),
         "availability": resource.get("availability"),
         "health": resource.get("health"),
         "current_claim": resource.get("current_claim"),
         "queue_depth": resource.get("queue_depth"),
-        "journal_newest": [{k: getattr(e, k) for k in Entry.__slots__ if getattr(e, k) is not None} for e in newest],
-        "now": result.get("now"),
-    }, indent=2))
+    }
+    for member in STATUS_RESOURCE_MEMBERS:
+        if member in resource:
+            shown[member] = resource[member]
+    if args.claim is not None:
+        claim = api.get_claim(args.claim).get("claim") or {}
+        shown["claim"] = {member: claim[member] for member in STATUS_CLAIM_MEMBERS if member in claim}
+    shown["journal_newest"] = [{k: getattr(e, k) for k in Entry.__slots__ if getattr(e, k) is not None}
+                               for e in newest]
+    shown["now"] = result.get("now")
+    print(json.dumps(shown, indent=2))
     return 0
 
 
@@ -2471,6 +3511,29 @@ def main(argv=None) -> int:
     p.add_argument("--job", help="a JSON object describing the job, sent as the claim's job (never the command)")
     p.add_argument("--build-session", help="a SpecStep/PostMQ build session id to attribute the claim to")
     p.add_argument("--provider", help=provider_help)
+    # Kit 1.4, rev 12 (design §17-§18): each is sent only when given, so without them this is kit 1.3's claim.
+    p.add_argument("--mode", dest="claim_mode", choices=CLAIM_MODES,
+                   help="exclusive (the default: all of the resource) or shared (co-tenant while quantities fit)")
+    p.add_argument("--quantity", type=int, help="with --mode shared: how much of the resource, in its own units")
+    p.add_argument("--yield-policy", choices=YIELD_POLICIES,
+                   help="how this claim yields when asked (the server's default is finish): finish runs to its own "
+                        "end; yield stops when anyone queues behind it or a drain asks; cancel stops for a drain; "
+                        "checkpoint asks the --on-yield hook; none refuses every drain")
+    p.add_argument("--on-yield", metavar="CMD",
+                   help="a command (no shell) run for each new yield or drain request, with the request as JSON on "
+                        "stdin; exit 0 stops the job and releases, any other status leaves it running. A hook stopped "
+                        "for a more urgent request is run again for its own if the claim still lists it, so make it "
+                        "safe to repeat")
+    p.add_argument("--expected-seconds", type=int,
+                   help="how long the job expects to run (1-604800); a borrow that would run into the incumbent's "
+                        "protected window is denied, or waits, naming it")
+    p.add_argument("--resumes", metavar="CLAIM_ID", help="your own earlier, ended claim on this resource that this one "
+                                                          "resumes (the incumbent's degradation ledger)")
+    p.add_argument("--purpose", choices=PURPOSES, help="job (the default) or maintenance (needs the maintainer role)")
+    p.add_argument("--drain", type=int, metavar="SECONDS",
+                   help="file a drain (incumbent or maintainer role): wait ahead of ordinary waiters and ask every "
+                        "holder in the way to yield within SECONDS (30-86400)")
+    p.add_argument("--drain-reason", metavar="TEXT", help="with --drain: why, shown to the holders asked (500 at most)")
     p.add_argument("command", nargs=argparse.REMAINDER, help="-- the command and its arguments")
     # The three waits the design fixes, shortened only by the test suite (tools/tests/postmq-claim) so it can drive
     # the timer fallback, a held gate and a lost claim in seconds rather than minutes.
@@ -2496,10 +3559,19 @@ def main(argv=None) -> int:
     p.add_argument("--identity-key", help="override the provider's identity key")
     p.add_argument("--interval", type=float, help=f"seconds between reports (default {SERVE_INTERVAL_SECONDS})")
     p.add_argument("--provider", help=provider_help)
+    p.add_argument("--mode", dest="resource_mode", choices=CLAIM_MODES,
+                   help="register it exclusive or shared (absent: exclusive on a first registration, unchanged after)")
+    p.add_argument("--quantity", type=int, help="with --mode shared: its capacity, in units you name (1-1000000)")
+    p.add_argument("--parent", metavar="RESOURCE_ID",
+                   help="the resource this one sits under — a GPU under its host (needs the maintainer role there)")
+    p.add_argument("--identity-crosscheck", metavar="X",
+                   help="a chassis serial, bus address or hypervisor registered beside the identity, so two machines "
+                        "with one identity are refused rather than merged (128 at most)")
     p.add_argument("--budget-scale", type=float, help=argparse.SUPPRESS)
 
     p = sub.add_parser("status", help="the resource as the server sees it, and this host's newest journal entries")
     p.add_argument("--resource", required=True)
+    p.add_argument("--claim", help="also show this claim: its occupancy, yield policy and yield or drain requests")
 
     args = parser.parse_args(argv)
     global WAIT_TIMER_SECONDS, GATE_TIMEOUT_SECONDS, STOP_GRACE_SECONDS, LAUNCH_MARGIN_SECONDS
@@ -2513,7 +3585,7 @@ def main(argv=None) -> int:
     if scale:
         # The test suite's knob: every provider budget scaled together, so a fallback is exercised in under a second.
         for name in ("BUDGET_DECLARE", "BUDGET_TELEMETRY", "BUDGET_PREFLIGHT", "BUDGET_CONTAINER", "BUDGET_STOP_EXTRA",
-                     "BUDGET_INSPECT", "BUDGET_RELEASE_RECEIPT", "BUDGET_RECONCILE_VERDICT"):
+                     "BUDGET_INSPECT", "BUDGET_RELEASE_RECEIPT", "BUDGET_RECONCILE_VERDICT", "BUDGET_OBSERVE"):
             globals()[name] = globals()[name] * scale
     if not WINDOWS and (fcntl is None or not hasattr(os, "setsid")):
         log("the sidecar needs flock(2) and POSIX sessions, or Windows job objects; this platform has neither")
