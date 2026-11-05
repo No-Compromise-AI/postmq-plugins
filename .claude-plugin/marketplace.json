@@ -18,7 +18,7 @@
     {
       "name": "postmq-claim",
       "source": "./plugins/postmq-claim",
-      "description": "Runs one job on a shared resource \u2014 a GPU host, a test gate \u2014 under a PostMQ claim, so two agents never use it at once and nobody hand-builds a polling loop or a lock file."
+      "description": "Runs one job on a shared resource \u2014 a GPU host, a test gate \u2014 under a PostMQ claim, so agents never collide on it (one at a time, or side by side within its capacity) and nobody hand-builds a polling loop or a lock file."
     }
   ]
 }

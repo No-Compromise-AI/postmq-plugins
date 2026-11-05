@@ -3,10 +3,14 @@
 postmq-claim.py — hold a PostMQ resource claim around one job, and speak for a resource
 (resource coordination §8.3–§8.4, issues #1397 and #1398).
 
-    postmq-claim.py run --resource <resource_id> [--ttl S] [--wait S] [--provider F:fn] -- <command> [args…]
+    postmq-claim.py run --resource <resource_id> [--ttl S] [--wait S] [--provider F:fn]
+                        [--mode exclusive|shared] [--quantity N] [--yield-policy P] [--on-yield CMD]
+                        [--expected-seconds S] [--resumes <claim_id>] [--purpose job|maintenance]
+                        [--drain S [--drain-reason TEXT]] -- <command> [args…]
     postmq-claim.py reconcile --resource <resource_id> [--claim <claim_id>] [--provider F:fn]
     postmq-claim.py serve --kind K --display-name N --provider F:fn [--interval S]
-    postmq-claim.py status --resource <resource_id>
+                          [--mode shared --quantity N] [--parent <resource_id>] [--identity-crosscheck X]
+    postmq-claim.py status --resource <resource_id> [--claim <claim_id>]
 
 This is the command line. Everything it does lives in postmq_claim.py, the adapter SDK installed beside it: its
 docstring describes the launch sequence, the provider protocol, the call budgets, the environment it reads and the
