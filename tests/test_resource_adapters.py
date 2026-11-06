@@ -220,9 +220,9 @@ raise SystemExit(0 if result.testsRun and result.wasSuccessful() and not result.
 
     def test_linux_synthetic_refusal_and_inventory_controls(self):
         tests = ["test_provider.py", "test_guarded.py", "test_linux_procscan.py", "test_container_assessment.py",
-                 "test_cuda_driver_probe.py", "test_observer_context_check.py"]
+                 "test_cuda_driver_probe.py", "test_observer_context_check.py", "test_managed_allocation.py"]
         names = ["test_provider", "test_guarded", "test_linux_procscan.PureRentalTests",
-                 "test_container_assessment", "test_cuda_driver_probe", "test_observer_context_check"]
+                 "test_container_assessment", "test_cuda_driver_probe", "test_observer_context_check", "test_managed_allocation"]
         self.run_controls("linux", tests, names)
 
     def test_macos_synthetic_custody_refusals(self):
@@ -240,6 +240,23 @@ raise SystemExit(0 if result.testsRun and result.wasSuccessful() and not result.
                                     capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("--gpu-uuid", result.stdout)
+
+    def test_v2_guard_scope_helper_loads_with_actual_isolated_python(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary).resolve() / "bundle"
+            builder.assemble("linux", output)
+            code = """import importlib.util,sys
+from pathlib import Path
+path=Path(sys.argv[1])/'rental_guard.py'
+spec=importlib.util.spec_from_file_location('isolated_rental_guard',path)
+guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard)
+scope=guard.sibling('allocation_scope')
+assert callable(scope.native.process)
+assert scope.PROVIDER=='linux-procscan-v2'
+"""
+            result = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(output)],
+                                    cwd=temporary, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if sys.platform == "linux":
@@ -289,6 +306,17 @@ class CurrentSDKContract(unittest.TestCase):
                                   f"scope:{claim}:1:{identity}:1:2:3"))
                 providers.append((sdk.load_provider(str(linux / "sdk_provider.py") + ":rental_factory"),
                                   f"procscan:{claim}:1:{identity}:1:2:3"))
+
+            entry = load(linux / "sdk_provider.py", "public_contract_linux_entry")
+            allocation_scope = entry._provider("allocation_scope")
+            config.write_text(json.dumps({"memory_mode": "unified", "baseline": baseline,
+                "receipt_provider": "linux-procscan-v2", "provider": "vast", "instance_id": "123",
+                "cuda_library": str(linux / "evidence.py"), "required_bytes": 1, "reserve_bytes": 1,
+                "native_state_root": str(root / "rental")}))
+            with mock.patch.dict("os.environ", {"POSTMQ_LINUX_CONFIG": str(config)}, clear=True), \
+                 mock.patch.object(allocation_scope, "binding", return_value="a"*32):
+                providers.append((sdk.load_provider(str(linux / "sdk_provider.py") + ":managed_allocation_factory"),
+                                  f"procscan2:{claim}:1:{identity}:1:2:3:" + "a"*32))
 
             mac = root / "macos"
             entry = load(mac / "entry.py", "public_contract_mac_entry")
@@ -342,9 +370,9 @@ class CurrentSDKContract(unittest.TestCase):
                 with self.subTest(provider=type(provider).__name__):
                     declaration = sdk.declared(sdk.Bounded(provider))
                     self.assertTrue(declaration["provider_host_key"])
-                    self.assertIn(declaration["receipt_provider"], {"generic", "linux-cgroup", "linux-procscan-v1"})
+                    self.assertIn(declaration["receipt_provider"], {"generic", "linux-cgroup", "linux-procscan-v1", "linux-procscan-v2"})
                     self.assertTrue(sdk.valid_journal_ref(reference))
-                    if reference.startswith(("scope:", "procscan:")):
+                    if reference.startswith(("scope:", "procscan:", "procscan2:")):
                         self.assertEqual(provider.journal_ref({"ref": reference, "claim_id": claim, "fence": 1}),
                                          reference)
                     else:

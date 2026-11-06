@@ -202,6 +202,21 @@ class ProcscanProvider:
         self.failed_children = {}
         self.lock = threading.RLock()
 
+    def parse_ref(self, ref):
+        return parts(ref)
+
+    def native_config(self):
+        return {}
+
+    def native_environment(self):
+        return {}
+
+    def cleanup_sample(self, inspection, ref):
+        return self.probe.snapshot(inspection["members"])
+
+    def cleanup_verdict(self, inspection, sample):
+        return clean_verdict(self.baseline, inspection, sample, memory_qualified=self.memory_qualified)
+
     def _host(self):
         require_support()
         if Path("/proc/sys/kernel/random/boot_id").read_text().strip() != self.baseline.boot_id:
@@ -255,13 +270,13 @@ class ProcscanProvider:
     def journal_ref(self, handle):
         if not isinstance(handle, dict):
             raise RentalError("native handle required")
-        value = parts(handle.get("ref"))
+        value = self.parse_ref(handle.get("ref"))
         if value[:2] != (handle.get("claim_id"), handle.get("fence")) or type(handle.get("fence")) is not int:
             raise RentalError("native handle claim or fence differs")
         return handle["ref"]
 
     def _rpc(self, ref, op="inspect", **values):
-        claim, fence, boot, pid, start, inode = parts(ref)
+        claim, fence, boot, pid, start, inode = self.parse_ref(ref)
         self._host()
         if boot != self.baseline.boot_id:
             raise RentalError("reference boot differs")
@@ -313,13 +328,13 @@ class ProcscanProvider:
             job_env = job_environment(env, self.allowed_job_env)
             job_env["CUDA_VISIBLE_DEVICES"] = self.baseline.gpu_uuid
             payload = json.dumps({"claim_id": claim_id, "fence": fence, "argv": list(argv), "env": job_env,
-                                  "allowed_job_env": self.allowed_job_env}).encode()
+                                  "allowed_job_env": self.allowed_job_env, **self.native_config()}).encode()
             if len(payload) > 1048576:
                 raise RentalError("native launch configuration exceeds bound")
             child = subprocess.Popen([sys.executable, "-I", "-B", str(Path(__file__).with_name("rental_guard.py")),
                                       str(data_r), str(release_fd), str(ready_w), str(pub_r), str(directory)],
                                      pass_fds=(data_r, release_fd, ready_w, pub_r), start_new_session=True,
-                                     env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+                                     env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", **self.native_environment()},
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             for fd in (data_r, ready_w, pub_r):
                 os.close(fd); opened.remove(fd)
@@ -340,7 +355,7 @@ class ProcscanProvider:
                 raw += chunk
             metadata = json.loads(raw)
             publication_deadline = time.monotonic() + 6
-            ref = metadata["ref"]; value = parts(ref)
+            ref = metadata["ref"]; value = self.parse_ref(ref)
             if value[:3] != (claim_id, fence, self.baseline.boot_id) or value[3] != child.pid or value[5] != directory.stat().st_ino:
                 raise RentalError("native ready identity differs")
             current = self._rpc(ref)
@@ -398,9 +413,8 @@ class ProcscanProvider:
         while True:
             try:
                 inspection = self._rpc(ref)
-                sample = self.probe.snapshot(inspection["members"])
-                outcome, detail = clean_verdict(self.baseline, inspection, sample,
-                                               memory_qualified=self.memory_qualified)
+                sample = self.cleanup_sample(inspection, ref)
+                outcome, detail = self.cleanup_verdict(inspection, sample)
                 tail.append({"observed_at": utc_now(), "sample_observed_at": sample.get("observed_at"),
                              "summary": outcome + ": " + detail})
                 stable = stable + 1 if outcome == "verified_clean" else 0
@@ -413,14 +427,14 @@ class ProcscanProvider:
                         if child.wait(timeout=2) != 0:
                             raise RentalError("native supervisor teardown failed")
                     closing = time.monotonic() + 2
-                    native_pid, native_start = parts(ref)[3:5]
+                    native_pid, native_start = self.parse_ref(ref)[3:5]
                     while True:
                         try:
                             current = process(native_pid)
                             live = current["start"] == native_start and current["state"] != "Z"
                         except FileNotFoundError:
                             live = False
-                        if not live and not self._directory(*parts(ref)[:2]).exists():
+                        if not live and not self._directory(*self.parse_ref(ref)[:2]).exists():
                             break
                         if time.monotonic() >= closing:
                             raise RentalError("native supervisor collection unproven")
@@ -457,7 +471,7 @@ class ProcscanProvider:
         else:
             from container_assessment import LocalBinding, assess, visible_limits
         ref = handle_or_ref if isinstance(handle_or_ref, str) else self.journal_ref(handle_or_ref)
-        binding = LocalBinding(*parts(ref), self.baseline.gpu_uuid, self.baseline.total_bytes)
+        binding = LocalBinding(*self.parse_ref(ref), self.baseline.gpu_uuid, self.baseline.total_bytes)
         inspection, sample, limits, compute = {}, {}, {}, {}
         try:
             self._host()
@@ -494,7 +508,7 @@ class ProcscanProvider:
             return "unknown", "no unique native rental reference in SDK journal", None
         ref = matches[-1].ref
         try:
-            if parts(ref)[:2] != (claim_id, fence):
+            if self.parse_ref(ref)[:2] != (claim_id, fence):
                 raise RentalError("journal native identity differs")
             with self.lock:
                 self.created.add(ref)

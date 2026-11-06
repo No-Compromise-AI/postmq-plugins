@@ -1,7 +1,7 @@
 """Local container observations; deliberately NOT a receipt or admission policy.
 
-The coordinator has no claim-frozen scoped cleanup contract yet. These facts
-can be tested without teaching today's verified_clean a different meaning.
+These v1 observational facts never become a receipt. The separate versioned
+managed-allocation provider defines its own explicit cleanup/admission policy.
 No process/device controls, broker, reservation, journal or cached proof.
 """
 
