@@ -103,6 +103,20 @@ class Admission(unittest.TestCase):
         # Old free memory below its baseline is not residue in this contract.
         self.assertEqual("verified_clean", p.cleanup_verdict(observation(), sample())[0])
 
+    def test_sdk_default_stop_is_bounded_and_invalid_grace_never_reaches_native(self):
+        p = self.make()
+        ref = f"procscan2:{CLAIM}:1:{BOOT}:123:456:789:{SCOPE}"
+        p.created.add(ref)
+        handle = {"ref": ref, "claim_id": CLAIM, "fence": 1}
+        with patch.object(p, "_rpc", return_value={"state": "gone"}) as native:
+            p.stop(handle, 30)
+            native.assert_called_once_with(ref, "stop", grace=10.0)
+        for grace in (True, -1, float("inf"), float("nan"), "30"):
+            with self.subTest(grace=grace), patch.object(p, "_rpc") as native:
+                with self.assertRaises(legacy.RentalError):
+                    p.stop(handle, grace)
+                native.assert_not_called()
+
     def test_changed_scope_and_unclassified_visible_holder_refuse(self):
         p = self.make()
         claim = {"claim_id": CLAIM, "fence": 1, "state": "granted"}

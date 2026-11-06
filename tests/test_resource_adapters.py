@@ -379,6 +379,22 @@ class CurrentSDKContract(unittest.TestCase):
                         self.assertIsNotNone(sys.modules[type(provider).__module__].REF.fullmatch(reference))
                     parsed = sdk.parse_entry(f"launched {claim} 1 {reference}")
                     self.assertEqual((parsed.claim, parsed.fence, parsed.ref), (claim, 1, reference))
+                    if reference.startswith("procscan2:"):
+                        provider.created.add(reference)
+                        handle = {"ref": reference, "claim_id": claim, "fence": 1}
+                        with mock.patch.object(provider, "_rpc", return_value={"state": "gone"}) as native:
+                            sdk.Bounded(provider).call("stop", sdk.STOP_GRACE_SECONDS + sdk.BUDGET_STOP_EXTRA,
+                                                       handle, sdk.STOP_GRACE_SECONDS)
+                            native.assert_called_once_with(reference, "stop", grace=10.0)
+                        holder = object.__new__(sdk.Holder)
+                        holder.provider = provider; holder.handle = handle; holder.bounded = sdk.Bounded(provider)
+                        with mock.patch.object(provider, "_rpc", return_value={"state": "alive", "job_exit": 0,
+                                               "job_signal": None, "members": [{"pid": 99, "start": 100}]}):
+                            self.assertEqual(holder._inspect(), (sdk.GROUP_ALIVE, None))
+                            self.assertEqual(provider.inspect(handle)["primary_exit"], 0)
+                        with mock.patch.object(provider, "_rpc", return_value={"state": "gone", "job_exit": 0,
+                                               "job_signal": None, "members": []}):
+                            self.assertEqual(holder._inspect(), (sdk.GROUP_GONE, 0))
 
 
 if __name__ == "__main__":

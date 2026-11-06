@@ -7,6 +7,7 @@ The existing SDK and native prepared-child/subreaper remain the authorities.
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -178,6 +179,26 @@ class AllocationProvider(legacy.ProcscanProvider):
             # Known live owned work remains negative even if CUDA/proc reads
             # fail. Missing device evidence can never become a positive clean.
             return {"observed_at": utc_now(), "observation_error": type(error).__name__}
+
+    def inspect(self, handle_or_ref):
+        answer = super().inspect(handle_or_ref)
+        if answer.get("state") != "gone":
+            # The actual SDK treats a command return code as completion. Keep
+            # the supervised container active while a detached descendant is
+            # live; the original primary status remains in the guard and here.
+            answer = {**answer, "primary_exit": answer.get("job_exit"), "primary_signal": answer.get("job_signal"),
+                      "job_exit": None, "job_signal": None}
+        return answer
+
+    def stop(self, handle, grace_seconds):
+        # The SDK normally requests 30 seconds; the native operation already
+        # stops exact owned descendants immediately and only bounds its drain.
+        # Keep that existing <=10s native bound instead of rejecting the SDK's
+        # default and forcing an unknown receipt. Legacy v1 remains unchanged.
+        if (type(grace_seconds) not in (int, float) or not math.isfinite(grace_seconds)
+                or grace_seconds < 0):
+            raise legacy.RentalError("finite nonnegative SDK stop grace required")
+        return super().stop(handle, min(float(grace_seconds), legacy.MAX_DRAIN_SECONDS))
 
     def cleanup_verdict(self, inspection, sample):
         return clean_verdict(self.baseline, inspection, sample, self.scope_seal)

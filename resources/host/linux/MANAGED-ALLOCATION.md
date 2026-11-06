@@ -14,6 +14,12 @@ observations find no unclassified allocation-visible NVIDIA/DRM device handles.
 The private supervisor must still be authenticated by process birth, peer
 credentials, claim, fence, boot, state-directory inode and allocation scope.
 Only then is it dismissed and collected. No cached receipt replaces live proof.
+The SDK's ordinary stop request uses its normal grace setting; v2 caps the
+exact owned native stop/drain operation at ten seconds. It provides advisory
+revocation and does not promise a cooperative checkpoint grace period.
+The SDK-facing command status remains pending while supervised descendants
+are live. The primary's original terminal status is retained separately and
+becomes the command status only when the supervised container is gone.
 
 The scope seal binds the Vast instance, GPU UUID, boot, UID, PID and mount
 namespaces, namespace-init birth, visible cgroup inode, proc mount, visible
