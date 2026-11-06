@@ -1,13 +1,15 @@
 # Host adapters 0.2.0 — experimental source distribution
 
 These host providers implement process custody and cleanup for the existing PostMQ claim SDK.
-They execute on the resource host. A caller may use another OS, provided its separately configured
-transport reaches the owner entrypoint. Copying an adapter does not grant SSH or resource access.
+They execute on the resource host. A caller may use Linux, macOS or Windows, provided its separately
+configured transport reaches the owner entrypoint. Choose the target for the resource host, not the
+caller's OS. Copying an adapter does not grant SSH or resource access.
 
 | Source | Entry in an assembled bundle | Boundary |
 | --- | --- | --- |
 | [Linux](linux/src/sdk_provider.py) | `sdk_provider.py:factory` | Delegated cgroup v2 and systemd user scopes; exact owned guard/job identities. |
-| [Linux rental](linux/src/linux_procscan.py) | `sdk_provider.py:rental_factory` | Cooperative process tracking when cgroups are unavailable; weaker cleanup guarantees. |
+| [Linux rental v1](linux/src/linux_procscan.py) | `sdk_provider.py:rental_factory` | Cooperative process tracking when cgroups are unavailable; UMA cleanup remains unknown. |
+| [Linux managed allocation v2](linux/MANAGED-ALLOCATION.md) | `sdk_provider.py:managed_allocation_factory` | Supervised job and allocation-visible device-handle cleanup for one exclusive Vast UMA allocation; advisory enforcement and separate fresh capacity checks. |
 | [macOS](macos/src/entry.py) | `entry.py:factory` | Owned session and kqueue fork/exit observations; unknown descendants retain evidence. |
 | [Windows](windows/src/entry.py) | `entry.py:factory` | Job Objects, exact process handles/births, owner ACLs and machine-bound kernel identity. |
 | [Shared lifecycle](common/src/lifecycle/controller.py) | Library callbacks | Admission closure, cancellation obligations and bounded recovery backoff. |
@@ -31,6 +33,8 @@ python3 -I -B tools/build_resource_adapter.py verify /tmp/example-postmq-macos -
 ```
 
 Targets are `linux`, `macos` and `windows`. Assembly creates source files and a closed manifest only.
+The Linux bundle contains both rental providers; assembly does not select or activate one. Select the
+factory and review the [v2 profile](linux/MANAGED-ALLOCATION.md) before configuring an owner integration.
 It refuses an existing output, unrecognized target or source symlink. Verification refuses a changed
 manifest, modified source, extra files or symlinks. Use an independently reviewed checkout before
 assembly. A hash proves correspondence with the selected bytes; it does not authenticate a publisher.
@@ -85,7 +89,9 @@ Snapshot rollback, cloning an active installation and reusing its live state are
 
 Unknown or interrupted cleanup remains unknown until exact native/server evidence resolves it. A
 withdrawn resource is not reopened. GPU idle, host reachability or lease expiry alone never proves cleanup.
-Unified-memory rental GPU automatic reuse is not qualified by these sources.
+The legacy rental provider keeps unified-memory cleanup unknown. The separate
+[managed allocation v2 profile](linux/MANAGED-ALLOCATION.md) adds allocation-scoped UMA cleanup;
+it requires its own qualification and makes no physical-memory cleanup claim.
 
 The experimental Linux rental factory also accepts `provider: "vast"`. Its owner configuration must
 bind `instance_id` to the current container's `CONTAINER_ID`; workload environments strip `VAST_*`
@@ -124,8 +130,3 @@ in the relevant private application or service repository. No private evidence i
 Public tests establish the stated source/CPU contracts. They do not certify a particular GPU, rental,
 model, client, sleep/restart configuration or unattended deployment. A release and stronger compatibility
 claim require reviewed final sources and repeatable qualification for the stated combination.
-
-The separate experimental [managed allocation v2 profile](linux/MANAGED-ALLOCATION.md)
-adds allocation-scoped UMA cleanup through `sdk_provider.py:managed_allocation_factory`.
-It preserves v1 semantics and requires separate live qualification; no in-place
-provider migration or physical-memory cleanup claim is made.
