@@ -13,8 +13,8 @@ the complete trees under `plugins/postmq-session`, `plugins/postmq-wake` and `pl
 Paths are normalized relative regular files, without symlink traversal. Public checks reject unowned
 files in those namespaces, missing files, byte/mode drift and ownership of maintained files.
 
-The current manifest owns 19 files: the marketplace, the generated `.claude-plugin/README.md`, and
-the three plugin trees at version 1.11.0. The publisher must never overwrite root `README.md`, license,
+The manifest records the current owned file inventory and versions: the marketplace, the generated
+`.claude-plugin/README.md`, and the three plugin trees. The publisher must never overwrite root `README.md`, license,
 policy, specs, schemas, SDK/resource guidance, examples, conformance, checks or `.github`. Removing obsolete generated files
 requires evidence of prior ownership and unchanged content; never sweep directories or discard edits.
 
@@ -33,8 +33,22 @@ requires evidence of prior ownership and unchanged content; never sweep director
    installation paths before announcing availability. Publication does not authorize installing into
    user sessions or enabling wake/resource access for them.
 
-Future SDK packages, adapters and PmP schemas require their own reviewed publishing design and evidence.
+Future SDK packages and PmP schemas require their own reviewed publishing design and evidence.
 This procedure creates no registries, deployed services or implementation of proposed PmP/A2A behavior.
+
+### Maintained adapter source distribution
+
+Version 0.1.0 is an experimental source distribution under `resources`, not generated plugin content or
+a registry package. Its version is declared in `tools/build_resource_adapter.py`. Maintainers review the
+explicit source inventory, license provenance, synthetic fixtures, complete public gate and final PR CI.
+Keep operational profiles, private host details, transcripts, credentials and qualification records out of
+the public tree. Source imports need an allowlist and must not copy private directories wholesale.
+
+After the required public maintainer review and merge, source bundles may be assembled with the documented
+tool and verified against an independently retained manifest SHA256. Generated plugin version/ownership
+remains unchanged. No installation, live resource registration, device support certification or paid
+service activation is implied. A future downloadable release must publish its exact commit, version,
+manifests and qualified combinations through a separately reviewed release; no such release is created here.
 
 ## Dependency and license maintenance
 

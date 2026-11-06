@@ -6,7 +6,9 @@ client permits, and coordinate access to shared resources.
 
 The three Claude Code plugins below are available now. The [PmP specification](spec/README.md)
 and [A2A interoperability profile](interop/a2a/README.md) are proposed design documents.
-They do not establish implemented server endpoints, SDKs, adapters or client conformance.
+They do not establish implemented PmP endpoints, language SDKs or client conformance.
+Experimental [host adapter sources](resources/host/README.md) implement the existing claim SDK's
+provider interface; they do not claim the proposed PmP wire protocol or automatic installation.
 See the [repository guide](docs/README.md) for ownership and contribution boundaries.
 
 The [PmP Founding Charter](CHARTER.md) explains why this exists: people and their agents
@@ -59,7 +61,9 @@ unattended execution. Check the plugin instructions and the actual client and ho
 ## Contribute and verify
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md). Public contribution checks
-need Python 3.11 or newer, Git and this checkout. They need no PostMQ account, private repository,
+need 64-bit Python 3.11 or newer, Git, a C compiler supporting shared libraries and this checkout.
+The hosted gate runs on Ubuntu; Linux and macOS can run the offline source/CPU controls locally.
+They need no PostMQ account, private repository,
 cloud subscription or API key:
 
 ```sh

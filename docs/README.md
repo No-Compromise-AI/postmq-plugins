@@ -24,8 +24,11 @@ and repeatable evidence before it is advertised.
 
 ## Intended implementation layout
 
-Future implementations will land under this structure. The paths below are reserved design examples;
-empty packages/directories are not created to imply they work. In particular, `t4.yaml` is an illustrative
+Experimental host implementations now occupy `resources/host/{linux,macos,windows}/src`, with shared
+lifecycle callbacks under `resources/host/common/src` and NVIDIA observations under `resources/nvidia/src`.
+The [adapter guide](../resources/host/README.md) describes their assembly, tests and limits. The remaining
+paths below are reserved design examples; empty packages/directories are not created to imply they work.
+In particular, `t4.yaml` is an illustrative
 profile filename, not NVIDIA T4 qualification or a shipped resource profile.
 
 ```text
@@ -35,6 +38,7 @@ sdk/
   dotnet/
 resources/
   host/
+    common/
     linux/
     macos/
     windows/

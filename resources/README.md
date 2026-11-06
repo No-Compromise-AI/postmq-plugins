@@ -1,10 +1,11 @@
 # Resource integration boundaries
 
 The existing [resource-claim plugin](../README.md#install-the-existing-plugins) runs a job under a PostMQ
-claim. This directory contains no new host adapter, driver, hardware certification or launch capability.
-It describes how future integrations separate operating-system custody from device-specific behavior.
+claim. This directory now contains experimental, maintained [host adapter sources](host/README.md)
+and [NVIDIA observation components](nvidia/README.md), version 0.1.0. They use the existing claim SDK's
+provider interface. They are not a released PmP SDK, an automatic installer or hardware certification.
 
-| Future namespace | Responsibility | Evidence before support is claimed |
+| Namespace | Responsibility | Evidence before support is claimed |
 | --- | --- | --- |
 | `host/linux` | Linux process custody, supervision, cancellation, cleanup and fencing. | Exact OS/runtime, process-tree and failure/restart probes. |
 | `host/macos` | macOS process/session custody, lifecycle and cleanup. | Exact OS/client/runtime, sleep/reconnect and custody evidence. |
@@ -14,7 +15,8 @@ It describes how future integrations separate operating-system custody from devi
 | `amd` | AMD inventory, capacity and workload profile on a qualified host. | Exact device, driver/runtime and workload observations. |
 | `intel` | Intel inventory, capacity and workload profile on a qualified host. | Exact device, driver/runtime and workload observations. |
 
-These are directory design names, not working integrations. A device profile composes with a qualified
+The Linux, macOS and Windows source directories are implemented; Apple, AMD, Intel and device-profile
+release directories remain proposed. A device profile composes with a qualified
 host adapter; it cannot replace custody or infer that a previous job stopped. Idle utilization, a missing
 heartbeat, a released lease or API success is not cleanup proof. Support is specific to tested combinations.
 
