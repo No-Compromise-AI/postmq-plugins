@@ -1,14 +1,17 @@
-# PostMQ plugins and PmP coordination
+# PostMQ plugins and resource adapters
 
-Public plugins, coordination specifications and interoperability guidance for PostMQ.
+Public plugins, experimental resource adapter sources and proposed interoperability specifications for PostMQ.
 PostMQ helps AI agents exchange durable messages, retain project context, wake where their
 client permits, and coordinate access to shared resources.
 
-The three Claude Code plugins below are available now. The [PmP specification](spec/README.md)
-and [A2A interoperability profile](interop/a2a/README.md) are proposed design documents.
-They do not establish implemented PmP endpoints, language SDKs or client conformance.
-Experimental [host adapter sources](resources/host/README.md) implement the existing claim SDK's
-provider interface; they do not claim the proposed PmP wire protocol or automatic installation.
+| What you need | Available here | Start with |
+| --- | --- | --- |
+| Project sessions, inbox wake or resource claims in Claude Code | Three installable plugins: `postmq-session`, `postmq-wake`, `postmq-claim`. | [Plugin installation](#install-the-existing-plugins) |
+| A provider for a shared Linux, macOS or Windows host | Experimental adapter source distribution 0.2.0 for the existing claim SDK, including a separate GB10/UMA managed-allocation profile. | [Build a source bundle](#build-an-adapter-source-bundle) and [choose a provider](resources/host/README.md) |
+| Portable PmP or A2A interoperability | Proposed specifications and compatibility requirements. | [PmP](spec/README.md) and [A2A profile](interop/a2a/README.md) |
+
+The adapters implement the existing claim SDK's provider interface. PmP endpoints, general language SDKs
+and portable client conformance remain proposed; the adapter source distribution does not implement them.
 See the [repository guide](docs/README.md) for ownership and contribution boundaries.
 
 The [PmP Founding Charter](CHARTER.md) explains why this exists: people and their agents
@@ -44,6 +47,39 @@ claude plugin install postmq-claim@postmq
 Installation does not grant resource access, prove existing-session delivery or qualify a host for
 unattended execution. Check the plugin instructions and the actual client and host before enabling it.
 
+## Build an adapter source bundle
+
+Adapters run on the **resource host**. The caller may be on Linux, macOS or Windows when a separately
+configured transport reaches the owner entrypoint. Remote access, owner policy and workload runtimes
+must be configured separately.
+
+| Resource host or profile | Source capability | Guide |
+| --- | --- | --- |
+| Linux with delegated cgroup v2 and systemd user scopes | Native job supervision and cleanup. | [Host providers](resources/host/README.md) |
+| Linux rental, including a GB10/UMA allocation | Legacy process tracking or the separate v2 allocation-scoped cleanup profile; fresh capacity is checked separately. | [Host providers](resources/host/README.md) and [managed allocation v2](resources/host/linux/MANAGED-ALLOCATION.md) |
+| macOS | Owned session and process lifecycle supervision. | [Host providers](resources/host/README.md) |
+| Windows x64 | Job Object supervision and native process identity. | [Host providers](resources/host/README.md) |
+
+With Python 3.11+ in a reviewed checkout, choose a new output directory with an existing parent.
+For example, assemble a Linux bundle beside this checkout:
+
+```sh
+python3 -I -B tools/build_resource_adapter.py assemble linux ../example-postmq-linux
+```
+
+Save the printed `manifest_sha256` value outside the bundle. Replace `REVIEWED_SHA256` below with that
+value to verify the exact files:
+
+```sh
+python3 -I -B tools/build_resource_adapter.py verify ../example-postmq-linux --manifest-sha256 REVIEWED_SHA256
+```
+
+Targets are `linux`, `macos` and `windows`. These commands create and verify source files only; they
+need no credential, register no resource and launch no job. A matching hash identifies the selected
+bytes, not a trusted publisher. Read the [owner integration requirements](resources/host/README.md#owner-integration-and-compatibility)
+before execution and the [publishing guide](docs/publishing.md#maintained-adapter-source-distribution)
+for distribution boundaries. Source availability does not certify every device, model or unattended setup.
+
 ## Repository map
 
 | Path | What is here |
@@ -52,9 +88,9 @@ unattended execution. Check the plugin instructions and the actual client and ho
 | [spec/](spec/README.md) | Proposed portable PmP coordination requirements and scope. |
 | [interop/a2a/](interop/a2a/README.md) | Proposed A2A mapping and compatibility limits. |
 | [schemas/](schemas/README.md) | Schema publication rules; no released PmP wire schema yet. |
-| [sdk/](sdk/README.md) | SDK requirements; no published SDK in this repository. |
-| [resources/](resources/README.md) | Host lifecycle integration and hardware-specific profile boundaries. |
-| [examples/](examples/README.md) | Safe example requirements; no new runtime example claimed. |
+| [sdk/](sdk/README.md) | Proposed PmP language SDK requirements; the existing claim SDK ships in `postmq-claim`. |
+| [resources/](resources/README.md) | Maintained host adapter sources, NVIDIA observers and hardware profile boundaries. |
+| [examples/](examples/README.md) | Source-bundle quickstart and requirements for future runtime examples. |
 | [conformance/](conformance/README.md) | Required evidence and proposed interoperability cases. |
 | [docs/](docs/README.md) | Maintained repository, publishing and security guidance. |
 

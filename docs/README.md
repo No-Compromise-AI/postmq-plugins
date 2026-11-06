@@ -1,6 +1,8 @@
 # Repository guide
 
-Installed plugin artifacts and maintained public design documents have different owners and evidence requirements.
+Installable plugin artifacts, maintained adapter sources and proposed design documents have different
+owners and evidence requirements. Start with [plugin installation](../README.md#install-the-existing-plugins)
+or the [adapter source-bundle quickstart](../README.md#build-an-adapter-source-bundle).
 
 - [Founding charter](../CHARTER.md) and [governance](../GOVERNANCE.md): mission, public decisions and neutrality.
 - [Human control and trust](../spec/trust-and-control.md): current scope and future cross-authority requirements.
@@ -10,7 +12,11 @@ Installed plugin artifacts and maintained public design documents have different
 - [PmP specification](../spec/README.md): proposed portable requirements.
 - [A2A interoperability](../interop/a2a/README.md): mapping to a pinned external protocol, including gaps.
 - [Conformance](../conformance/README.md): evidence before compatibility claims.
-- [Resource integrations](../resources/README.md): host responsibilities and device profiles.
+- [Resource adapters](../resources/README.md): implemented host sources and proposed hardware profiles.
+- [Host integration](../resources/host/README.md): provider selection, assembly, compatibility and limits.
+- [Managed allocation v2](../resources/host/linux/MANAGED-ALLOCATION.md): separate GB10/UMA allocation
+  cleanup, fresh capacity and migration requirements.
+- [SDKs](../sdk/README.md): existing claim SDK versus proposed PmP language packages.
 - [Contribution policy](../CONTRIBUTING.md) and [agent guidance](../AGENTS.md).
 
 Public documents stand alone. Link public normative sources, label design status and avoid private
@@ -26,7 +32,8 @@ and repeatable evidence before it is advertised.
 
 Experimental host implementations now occupy `resources/host/{linux,macos,windows}/src`, with shared
 lifecycle callbacks under `resources/host/common/src` and NVIDIA observations under `resources/nvidia/src`.
-The [adapter guide](../resources/host/README.md) describes their assembly, tests and limits. The remaining
+The [adapter guide](../resources/host/README.md) describes their assembly, tests and limits. The source
+distribution version is independent of generated plugin and cleanup-profile versions. The remaining
 paths below are reserved design examples; empty packages/directories are not created to imply they work.
 In particular, `t4.yaml` is an illustrative
 profile filename, not NVIDIA T4 qualification or a shipped resource profile.

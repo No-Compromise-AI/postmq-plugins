@@ -1,6 +1,15 @@
-# SDK publication requirements
+# Existing claim SDK and proposed PmP SDKs
 
-No PmP SDK is published here yet. Existing [Claude plugins](../README.md) are not general PmP client libraries.
+The existing `postmq-claim` plugin contains a [Python claim SDK](../plugins/postmq-claim/tools/postmq_claim.py)
+and [command-line wrapper](../plugins/postmq-claim/tools/postmq-claim.py). Its
+[provider contract](../plugins/postmq-claim/skills/claim/SKILL.md) is the interface implemented by the
+experimental [host adapters](../resources/host/README.md). Adapter source bundles do not vendor that SDK;
+the owner integration must select and verify the SDK/provider combination.
+
+No general PmP language SDK is published here yet. The existing claim SDK and
+[Claude plugins](../README.md#install-the-existing-plugins) do not establish the proposed PmP wire protocol.
+
+## Future language packages
 
 A language SDK must implement a versioned [public contract](../spec/README.md), preserve canonical identity,
 authorization, idempotency, leases, fencing and recovery, and pass applicable [conformance cases](../conformance/README.md).

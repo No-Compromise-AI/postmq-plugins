@@ -6,6 +6,12 @@ lent Vast unified-memory allocation. Its SDK entrypoint is
 continues to mean `linux-procscan-v1`; its unified-memory verdict stays unknown.
 Implementation and synthetic controls are not live-device qualification.
 
+The provider ships in the experimental 0.2.0 Linux source bundle; `v2` names its
+cleanup profile, not the bundle or plugin version. Use the
+[source-bundle quickstart](../../../README.md#build-an-adapter-source-bundle)
+and [host integration guide](../README.md#owner-integration-and-compatibility)
+before selecting it. Assembly does not register a resource or activate this profile.
+
 ## Meaning of a clean receipt
 
 For v2, `verified_clean` means the exact prepared primary has a retained terminal
