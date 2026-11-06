@@ -7,7 +7,7 @@ client permits, and coordinate access to shared resources.
 | What you need | Available here | Start with |
 | --- | --- | --- |
 | Project sessions, inbox wake or resource claims in Claude Code | Three installable plugins: `postmq-session`, `postmq-wake`, `postmq-claim`. | [Plugin installation](#install-the-existing-plugins) |
-| A provider for a shared Linux, macOS or Windows host | Experimental adapter source distribution 0.2.0 for the existing claim SDK, including a separate GB10/UMA managed-allocation profile. | [Build a source bundle](#build-an-adapter-source-bundle) and [choose a provider](resources/host/README.md) |
+| A provider for a shared Linux, macOS or Windows host | Experimental adapter source distribution 0.2.1 for the existing claim SDK, including a separate GB10/UMA managed-allocation profile. | [Build a source bundle](#build-an-adapter-source-bundle) and [choose a provider](resources/host/README.md) |
 | Portable PmP or A2A interoperability | Proposed specifications and compatibility requirements. | [PmP](spec/README.md) and [A2A profile](interop/a2a/README.md) |
 
 The adapters implement the existing claim SDK's provider interface. PmP endpoints, general language SDKs

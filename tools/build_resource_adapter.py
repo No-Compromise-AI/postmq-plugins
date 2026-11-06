@@ -11,12 +11,12 @@ import re
 import stat
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 CATALOG = {
     "linux": {
         "resources/host/linux/src": ["__init__.py", "sdk_provider.py", "evidence.py", "linux_cgroup.py",
             "guarded_cgroup.py", "guard.py", "trampoline.py", "linux_procscan.py", "rental_guard.py",
-            "rental_native.py", "container_assessment.py", "allocation_scope.py", "managed_allocation.py"],
+            "rental_native.py", "container_assessment.py", "allocation_scope.py", "uid_inventory.py", "managed_allocation.py"],
         "resources/nvidia/src": ["probe.py", "cuda_driver_probe.py", "observer_context_check.py", "native_cuda_checks.py"],
     },
     "macos": {"resources/host/macos/src": ["__init__.py", "entry.py", "native.py", "provider.py", "guard.py"]},

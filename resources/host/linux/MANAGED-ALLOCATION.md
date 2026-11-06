@@ -6,7 +6,7 @@ lent Vast unified-memory allocation. Its SDK entrypoint is
 continues to mean `linux-procscan-v1`; its unified-memory verdict stays unknown.
 Implementation and synthetic controls are not live-device qualification.
 
-The provider ships in the experimental 0.2.0 Linux source bundle; `v2` names its
+The provider ships in the experimental 0.2.1 Linux source bundle; `v2` names its
 cleanup profile, not the bundle or plugin version. Use the
 [source-bundle quickstart](../../../README.md#build-an-adapter-source-bundle)
 and [host integration guide](../README.md#owner-integration-and-compatibility)
@@ -40,6 +40,23 @@ scope, lost supervisor or unavailable device identity yields unknown. A known
 live descendant or unclassified visible device holder prevents clean proof.
 The exact authenticated supervisor is the only excluded process: it proves it
 inherited no device handles before becoming non-dumpable, and never loads CUDA.
+
+When root lacks permission to inspect a different user's descriptor table,
+source distribution 0.2.1 can launch a finite read-only collector under that
+process's existing uniform UID/GID. The child drops supplementary groups and
+capabilities, disables privilege gain and becomes non-dumpable. It receives
+only numeric target/device metadata through private pipes, inherits no other
+descriptors or environment, and never opens a device or controls a target.
+Every target's birth and credentials are checked before and after inspection;
+the child is collected within the existing one-second inventory deadline.
+The complete PID set is still checked on both sides. No process is exempted.
+Mixed credentials, missing UID-switch support, protected processes, permission
+failures, changed identities, malformed results and timeouts remain unknown.
+No extra container capabilities or global proc/ptrace settings are required
+or changed. This follows the kernel's
+[descriptor-access checks](https://man7.org/linux/man-pages/man5/proc_pid_fd.5.html);
+it does not bypass them. Collector bytes participate in the allocation scope,
+so deployments need a fresh reviewed binding and cannot reinterpret old refs.
 
 This does **not** assert cold physical RAM, a job-local memory charge, complete
 physical-host/graphics visibility, cleanup of hidden peers, or enforced
