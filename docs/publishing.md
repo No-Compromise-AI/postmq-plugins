@@ -38,7 +38,7 @@ This procedure creates no registries, deployed services or implementation of pro
 
 ### Maintained adapter source distribution
 
-Version 0.1.0 is an experimental source distribution under `resources`, not generated plugin content or
+Version 0.2.0 is an experimental source distribution under `resources`, not generated plugin content or
 a registry package. Its version is declared in `tools/build_resource_adapter.py`. Maintainers review the
 explicit source inventory, license provenance, synthetic fixtures, complete public gate and final PR CI.
 Keep operational profiles, private host details, transcripts, credentials and qualification records out of

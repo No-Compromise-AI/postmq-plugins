@@ -35,3 +35,7 @@ def factory():
 
 def rental_factory():
     return _provider("linux_procscan").factory()
+
+
+def managed_allocation_factory():
+    return _provider("managed_allocation").factory()

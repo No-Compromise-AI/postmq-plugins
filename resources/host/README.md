@@ -1,4 +1,4 @@
-# Host adapters 0.1.0 — experimental source distribution
+# Host adapters 0.2.0 — experimental source distribution
 
 These host providers implement process custody and cleanup for the existing PostMQ claim SDK.
 They execute on the resource host. A caller may use another OS, provided its separately configured
@@ -124,3 +124,8 @@ in the relevant private application or service repository. No private evidence i
 Public tests establish the stated source/CPU contracts. They do not certify a particular GPU, rental,
 model, client, sleep/restart configuration or unattended deployment. A release and stronger compatibility
 claim require reviewed final sources and repeatable qualification for the stated combination.
+
+The separate experimental [managed allocation v2 profile](linux/MANAGED-ALLOCATION.md)
+adds allocation-scoped UMA cleanup through `sdk_provider.py:managed_allocation_factory`.
+It preserves v1 semantics and requires separate live qualification; no in-place
+provider migration or physical-memory cleanup claim is made.

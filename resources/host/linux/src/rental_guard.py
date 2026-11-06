@@ -48,6 +48,14 @@ def main():
     if len(raw) > 1048576:
         return 2
     config = json.loads(raw)
+    allocation = None
+    scope_seal = None
+    if "allocation_profile" in config:
+        allocation = sibling("allocation_scope")
+        scope_seal = allocation.binding(config["allocation_profile"])
+        if scope_seal != config.get("scope_seal"):
+            return 2
+        allocation.supervisor_gpu_free(allocation.devices())
     common.subreaper()
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         # Caught handlers, unlike SIG_IGN, reset to defaults at the job's exec.
@@ -58,6 +66,8 @@ def main():
     inode = directory.stat().st_ino
     ref = "procscan:" + ":".join(map(str, (config["claim_id"], config["fence"], boot,
                                              own["pid"], own["start"], inode)))
+    if allocation is not None:
+        ref = "procscan2:" + ref.split(":", 1)[1] + ":" + scope_seal
     endpoint = directory / "guard.sock"
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(endpoint)); os.chmod(endpoint, 0o600); server.listen(8); server.settimeout(0.2)
@@ -70,6 +80,8 @@ def main():
     def snapshot():
         if directory.stat().st_ino != inode:
             raise native.NativeUnknown("native directory identity changed")
+        if allocation is not None and allocation.binding(config["allocation_profile"]) != scope_seal:
+            raise native.NativeUnknown("allocation scope changed")
         with membership_lock:
             members = native.inventory(os.getpid())
         with lock:
@@ -78,6 +90,8 @@ def main():
         # membership, including collected zombies, is the conservative boundary.
         result.update(ref=ref, members=members, state="alive" if members else "gone",
                       job_ended=ended.is_set())
+        if scope_seal is not None:
+            result["scope_seal"] = scope_seal
         if result.get("error"):
             result["state"] = "unverifiable"
         return result
@@ -143,6 +157,9 @@ def main():
         before = native.process(pid)
         if before["ppid"] != os.getpid():
             raise native.NativeUnknown("prepared job is not a direct child")
+        if allocation is not None:
+            # This is after fork: only the supervisor regains its public ID.
+            os.environ["CONTAINER_ID"] = allocation_id
         threading.Thread(target=serve, daemon=True).start()  # Fork already happened.
         write_line(ready_fd, {"ref": ref, "prepared_pid": pid, "prepared_start": before["start"]})
         os.close(ready_fd)
@@ -158,6 +175,9 @@ def main():
     # Only the explicit job environment reaches exec. Management credentials
     # and control-channel discovery variables never do.
     environment = native.job_environment(config["env"], config.get("allowed_job_env", ()))
+    # Retain only the public allocation ID in the supervisor for fresh binding.
+    # The child environment still receives only the explicit job allowlist.
+    allocation_id = os.environ.get("CONTAINER_ID")
     os.environ.clear(); os.environ.update(environment)
     try:
         status = common.launch_job(config["argv"], release_fd, prepared,
