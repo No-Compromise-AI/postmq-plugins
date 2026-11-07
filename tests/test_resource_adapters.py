@@ -220,9 +220,9 @@ raise SystemExit(0 if result.testsRun and result.wasSuccessful() and not result.
 
     def test_linux_synthetic_refusal_and_inventory_controls(self):
         tests = ["test_provider.py", "test_guarded.py", "test_linux_procscan.py", "test_container_assessment.py",
-                 "test_cuda_driver_probe.py", "test_observer_context_check.py", "test_managed_allocation.py"]
+                 "test_cuda_driver_probe.py", "test_observer_context_check.py", "test_managed_allocation.py", "test_uid_inventory.py"]
         names = ["test_provider", "test_guarded", "test_linux_procscan.PureRentalTests",
-                 "test_container_assessment", "test_cuda_driver_probe", "test_observer_context_check", "test_managed_allocation"]
+                 "test_container_assessment", "test_cuda_driver_probe", "test_observer_context_check", "test_managed_allocation", "test_uid_inventory.Protocol"]
         self.run_controls("linux", tests, names)
 
     def test_macos_synthetic_custody_refusals(self):
@@ -261,6 +261,9 @@ assert scope.PROVIDER=='linux-procscan-v2'
 
 if sys.platform == "linux":
     class LinuxOwnedProcesses(unittest.TestCase):
+        def test_uid_collector_kernel_controls(self):
+            PortableProviderControls.run_controls(self, "linux", ["test_uid_inventory.py"], ["test_uid_inventory.Kernel"])
+
         # This class is deliberately absent on foreign OSes. It reports a real
         # Linux run, never a green stand-in or a skipped required check.
         def test_owned_fork_controls(self):

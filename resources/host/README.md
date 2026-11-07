@@ -1,4 +1,4 @@
-# Host adapters 0.2.0 — experimental source distribution
+# Host adapters 0.2.1 — experimental source distribution
 
 These host providers implement process custody and cleanup for the existing PostMQ claim SDK.
 They execute on the resource host. A caller may use Linux, macOS or Windows, provided its separately

@@ -38,7 +38,7 @@ This procedure creates no registries, deployed services or implementation of pro
 
 ### Maintained adapter source distribution
 
-Version 0.2.0 is an experimental source distribution under `resources`, not generated plugin content or
+Version 0.2.1 is an experimental source distribution under `resources`, not generated plugin content or
 a registry package. Its version is declared in `tools/build_resource_adapter.py`; it is independent of
 plugin versions and receipt-provider identifiers such as `linux-procscan-v2`. See the
 [source-bundle quickstart](../README.md#build-an-adapter-source-bundle) and
