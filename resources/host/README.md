@@ -130,3 +130,17 @@ in the relevant private application or service repository. No private evidence i
 Public tests establish the stated source/CPU contracts. They do not certify a particular GPU, rental,
 model, client, sleep/restart configuration or unattended deployment. A release and stronger compatibility
 claim require reviewed final sources and repeatable qualification for the stated combination.
+## Owner health reporting
+
+The shared `common/src/lifecycle/health.py` helper composes reporting health from
+fresh lifecycle evidence and a native provider's health. It separates a current
+error from a retained historical error after recovery, and refuses to label
+stale or future observations healthy. It grants no admission or cleanup authority.
+
+An embedding owner must validate its existing canonical resource, use its own
+authenticated bounded transport, and publish only advisory health/telemetry.
+Keep coordinator IO outside the native capacity sampler. Do not register a new
+row, change occupancy, reconcile or clear quarantine as part of a health update.
+Report native readiness, workload capacity and registry availability separately;
+an available device does not establish that a particular model fits. This source
+helper is not a persistent reporter or an installed service.
