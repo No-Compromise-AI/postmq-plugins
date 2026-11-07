@@ -14,6 +14,7 @@ package = importlib.util.module_from_spec(spec); sys.modules[spec.name] = packag
 from lifecycle_test_package.policy import Policy
 from lifecycle_test_package.state import Interlock
 from lifecycle_test_package.samples import mac_capacity, nvidia_sample
+from lifecycle_test_package.health import observation
 from lifecycle_test_package.controller import Controller
 
 GiB = 1024**3
@@ -267,6 +268,38 @@ class ControllerRaces(unittest.TestCase):
                 finally:
                     release.set();worker.join(2);callback.join(2);self.controller.desired=original
                 self.assertFalse(worker.is_alive());self.assertFalse(callback.is_alive())
+
+
+class HealthReporting(unittest.TestCase):
+    def state(self):
+        return dict(observed_continuous=100, ready=True, desired_owner_mode='background',
+                    new_job_capacity_ready=True, error_type='TimeoutError')
+
+    def test_recovered_owner_reports_current_health_and_retains_old_error_separately(self):
+        value = observation(self.state(), 'healthy', 101, 8)
+        self.assertEqual(value['health'], 'healthy')
+        self.assertIsNone(value['error_type'])
+        self.assertEqual(value['last_error_type'], 'TimeoutError')
+
+    def test_stale_future_and_missing_observation_never_report_healthy(self):
+        for stamp in (None, 110, 90, float('nan'), True):
+            with self.subTest(stamp=stamp):
+                state=self.state();state['observed_continuous']=stamp
+                self.assertEqual(observation(state,'healthy',101,8)['health'],'unknown')
+
+    def test_current_failure_native_state_owner_pause_and_capacity_are_not_hidden(self):
+        for field, value in (('ready',False),('desired_owner_mode','interactive'),
+                             ('new_job_capacity_ready',False)):
+            state=self.state();state[field]=value
+            self.assertEqual(observation(state,'healthy',101,8)['health'],'degraded')
+        for native in ('unknown','unhealthy','degraded'):
+            self.assertEqual(observation(self.state(),native,101,8)['health'],native)
+        state=self.state();state['ready']=False
+        self.assertEqual(observation(state,'healthy',101,8)['error_type'],'TimeoutError')
+
+    def test_invalid_clock_bounds_refuse(self):
+        for now, age in ((True,8),(float('nan'),8),(101,0),(101,float('inf'))):
+            with self.assertRaises(ValueError):observation(self.state(),'healthy',now,age)
 
 
 if __name__ == '__main__': unittest.main()
